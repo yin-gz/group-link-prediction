@@ -479,67 +479,29 @@ class Runner(object):
         pos_test_preds = []
 
         # calculate group-cate scores
-        if self.p.train_group:
-            split_edge = self.gc_split_edge
-            pos_valid_edge = split_edge['valid']['edge']
-            neg_valid_edge = split_edge['valid']['neg_edge']
-            pos_test_edge = split_edge['test']['edge']
-            neg_test_edge = split_edge['test']['neg_edge']
+        split_edge = self.gc_split_edge
+        pos_valid_edge = split_edge['valid']['edge']
+        neg_valid_edge = split_edge['valid']['neg_edge']
+        pos_test_edge = split_edge['test']['edge']
+        neg_test_edge = split_edge['test']['neg_edge']
 
-            #valid group-cate scores
-            print('valid_edge',pos_valid_edge.size(0))
-            for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True):
-                edge = pos_valid_edge[perm].t()
-                neg_target = neg_valid_edge[perm][:,:,1] #[batch,100,2] → [batch,100]
-                pos_out, neg_out = self.run_batch(edge, neg_target)
-                pos_valid_preds += [pos_out.squeeze().cpu()]
-                neg_valid_preds += [neg_out.squeeze().cpu()]
+        #valid group-cate scores
+        print('valid_edge',pos_valid_edge.size(0))
+        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True):
+            edge = pos_valid_edge[perm].t()
+            neg_target = neg_valid_edge[perm][:,:,1] #[batch,100,2] → [batch,100]
+            pos_out, neg_out = self.run_batch(edge, neg_target)
+            pos_valid_preds += [pos_out.squeeze().cpu()]
+            neg_valid_preds += [neg_out.squeeze().cpu()]
 
-            #test group-cate scores
-            print('test_edge', pos_test_edge.size(0))
-            for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
-                edge = pos_test_edge[perm].t()
-                neg_target = neg_test_edge[perm][:,:,1]
-                pos_out, neg_out = self.run_batch(edge, neg_target)
-                pos_test_preds += [pos_out.squeeze().cpu()]
-                neg_test_preds += [neg_out.squeeze().cpu()]
-
-        #test user (only when train_group is False)
-        elif self.p.train_user:
-            split_edge = self.ui_split_edge
-            pos_valid_edge = split_edge['valid']['edge']
-            neg_valid_edge = split_edge['valid']['neg_edge']
-            pos_test_edge = split_edge['test']['edge']
-            neg_test_edge = split_edge['test']['neg_edge']
-            h_group, h_cate, h_user, h_item = self.model(self.x_user, self.x_item, self.ui_graph, self.ic_graph, self.ug_graph)
-
-            #valid user-item scores
-            print('valid_edge',pos_valid_edge.size(0))
-            for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True):
-                edge = pos_valid_edge[perm].t()
-                # calculate pos score
-                source_h = torch.index_select(h_user, 0, edge[0])
-                target_h = torch.index_select(h_item, 0, edge[1])
-                pos_valid_preds += [self.predictor_user(source_h, target_h).squeeze().cpu()]
-                # calculate neg score
-                neg_edge = neg_valid_edge[perm].view(-1,2).t() #[batch,100,2] → [batch*100,2] →[2,batch*100]
-                source_h = torch.index_select(h_user, 0, neg_edge[0])
-                target_h = torch.index_select(h_item, 0, neg_edge[1])
-                neg_valid_preds += [self.predictor_user(source_h, target_h).view(-1,self.p.neg_for_test).squeeze().cpu()] # [step, (batch,100)]
-
-            #test user-item scores
-            print('test_edge', pos_test_edge.size(0))
-            for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
-                edge = pos_test_edge[perm].t()
-                # calculate pos score
-                source_h = torch.index_select(h_user, 0, edge[0])
-                target_h = torch.index_select(h_item, 0, edge[1])
-                pos_test_preds += [self.predictor_user(source_h,target_h).squeeze().cpu()]
-                # calculate neg score
-                neg_edge = neg_test_edge[perm].view(-1, 2).t()  # [batch,100,2] → [batch*100,2]
-                source_h = torch.index_select(h_user, 0, neg_edge[0])
-                target_h = torch.index_select(h_item, 0, neg_edge[1])
-                neg_test_preds += [self.predictor_user(source_h, target_h).view(-1,self.p.neg_for_test).squeeze().cpu()]  # [step, (batch,100)]
+        #test group-cate scores
+        print('test_edge', pos_test_edge.size(0))
+        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
+            edge = pos_test_edge[perm].t()
+            neg_target = neg_test_edge[perm][:,:,1]
+            pos_out, neg_out = self.run_batch(edge, neg_target)
+            pos_test_preds += [pos_out.squeeze().cpu()]
+            neg_test_preds += [neg_out.squeeze().cpu()]
 
         pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
         neg_valid_pred = torch.cat(neg_valid_preds, dim=0)  # (step*batch,100)
