@@ -100,3 +100,45 @@ def cconv(a, b):
 
 def ccorr(a, b):
     return torch.irfft(com_mult(conj(torch.rfft(a, 1)), torch.rfft(b, 1)), 1, signal_sizes=(a.shape[-1],))
+
+
+def get_metrics(ranking_list, n):
+    hits1_list = (ranking_list <= 1).to(torch.float)
+    hits3_list = (ranking_list <= 3).to(torch.float)
+    hits5_list = (ranking_list <= 5).to(torch.float)
+    hits10_list = (ranking_list <= 10).to(torch.float)
+    hits20_list = (ranking_list <= 20).to(torch.float)
+    mrr_list = 1. / ranking_list.to(torch.float)
+    ndcg1_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 1)] + 1)
+    ndcg3_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 3)] + 1)
+    ndcg5_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 5)] + 1)
+    ndcg10_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 10)] + 1)
+    ndcg20_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[ranking_list <= 20] + 1)
+
+    return {'hits@1': float(torch.mean(hits1_list).cpu()),
+            'hits@3': float(torch.mean(hits3_list).cpu()),
+            'hits@5': float(torch.mean(hits5_list).cpu()),
+            'hits@10': float(torch.mean(hits10_list).cpu()),
+            'hits@20': float(torch.mean(hits20_list).cpu()),
+            'mrr': float(torch.mean(mrr_list).cpu()),
+            'ndcg@1': float((torch.sum(ndcg1_list) / n).cpu()),
+            'ndcg@3': float((torch.sum(ndcg3_list) / n).cpu()),
+            'ndcg@5': float((torch.sum(ndcg5_list) / n).cpu()),
+            'ndcg@10': float((torch.sum(ndcg10_list) / n).cpu()),
+            'ndcg@20': float((torch.sum(ndcg20_list) / n).cpu())}
+
+
+def eval_pos_neg(y_pred_pos, y_pred_neg):
+    # y_pred_pos:[batch*step]
+    # y_pred_neg:[batch*step,n_group/100]
+    n = y_pred_pos.size(0)
+    print('pos ', y_pred_pos)
+    print('neg ', y_pred_neg)
+    y_pred = torch.cat([y_pred_neg, y_pred_pos.view(-1, 1)], dim=1)
+    argsort = torch.argsort(y_pred, dim=1, descending=True)
+    ranking_list = torch.nonzero(argsort == y_pred.size(-1) - 1, as_tuple=False)
+
+    ranking_list = ranking_list[:, 1] + 1
+    print('pos rank', ranking_list)
+    results = get_metrics(ranking_list, n)
+    return results

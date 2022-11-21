@@ -182,9 +182,13 @@ class B2GModel(GE):
 		if x_user_index is not None:
 			x_user = torch.index_select(x_user, 0, x_user_index)
 			x_item = torch.index_select(x_item, 0, x_item_index)
+		if node_num is not None:
+			group_num = node_num['group']
+			cate_num = node_num['cate']
+		else:
+			group_num = self.num_group
+			cate_num = self.num_cate
 
-		group_num = node_num['group']
-		cate_num = node_num['cate']
 		x_group = torch.zeros(group_num, self.p.init_dim).to(ui_graph.device)
 		x_cate = torch.zeros(cate_num, self.p.init_dim).to(ui_graph.device)
 		agg_graph_ug = ug_graph  # for aggregating

@@ -11,43 +11,6 @@ from torch_geometric.data import DataLoader
 from logger import Logger
 import wandb
 
-def eval_mrr_ndcg(y_pred_pos, y_pred_neg):
-    # y_pred_pos:[batch*step]
-    # y_pred_neg:[batch*step,n_group/100]
-    n = y_pred_pos.size(0)
-    print('pos ', y_pred_pos)
-    print('neg ', y_pred_neg)
-    y_pred = torch.cat([y_pred_neg, y_pred_pos.view(-1, 1)], dim=1)
-    argsort = torch.argsort(y_pred, dim=1, descending=True)
-    ranking_list = torch.nonzero(argsort == y_pred.size(-1) - 1, as_tuple=False)
-
-    ranking_list = ranking_list[:, 1] + 1
-    print('pos rank', ranking_list)
-    hits1_list = (ranking_list <= 1).to(torch.float)
-    hits3_list = (ranking_list <= 3).to(torch.float)
-    hits5_list = (ranking_list <= 5).to(torch.float)
-    hits10_list = (ranking_list <= 10).to(torch.float)
-    hits20_list = (ranking_list <= 20).to(torch.float)
-    mrr_list = 1. / ranking_list.to(torch.float)
-    ndcg1_list= torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 1)] + 1)
-    ndcg3_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 3)] + 1)
-    ndcg5_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 5)] + 1)
-    ndcg10_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[(ranking_list <= 10)] + 1)
-    ndcg20_list = torch.log(torch.tensor(2)) / torch.log(ranking_list[ranking_list <= 20] + 1)
-
-    return {'hits@1': float(torch.mean(hits1_list).cpu()),
-            'hits@3': float(torch.mean(hits3_list).cpu()),
-            'hits@5': float(torch.mean(hits5_list).cpu()),
-            'hits@10': float(torch.mean(hits10_list).cpu()),
-            'hits@20': float(torch.mean(hits20_list).cpu()),
-            'mrr': float(torch.mean(mrr_list).cpu()),
-            'ndcg@1': float((torch.sum(ndcg1_list) / n).cpu()),
-            'ndcg@3': float((torch.sum(ndcg3_list) / n).cpu()),
-            'ndcg@5': float((torch.sum(ndcg5_list) / n).cpu()),
-            'ndcg@10': float((torch.sum(ndcg10_list) / n).cpu()),
-            'ndcg@20': float((torch.sum(ndcg20_list) / n).cpu())}
-
-
 class Runner(object):
     def __init__(self, params, metrics):
         """
@@ -238,8 +201,8 @@ class Runner(object):
         # 3.2 group to cate edges
         self.gc_split_edge = {'train': {}, 'valid': {}, 'test': {}}
         gc_train_edge, gc_valid_edge, gc_test_edge = [], [], [] #[[source1,target1],[source2,target2]...]
+        gc_valid_target, gc_test_target = [], []#[[0, 1, 0...], [1, 0, 1]...]
         gc_train_neg_edge, gc_valid_neg_edge, gc_test_neg_edge = [], [], [] #[n_edge,self.p.neg_for_test,2]
-        gc_group_valid, gc_group_test = {}, {} #{'group_id':[[pos_ent1, pos_ent2, ...],[neg_ent1, neg_ent2, ...]]}
 
         train_group_num = int(0.6 * self.group_num)
         valid_group_num = int(0.2 * self.group_num)
@@ -248,6 +211,7 @@ class Runner(object):
         for group, item_list in group_item.items():
             group_id = group2id[group]
             cate_list = [cate2id[item_cate[item]] for item in item_list]
+            cate_label = [1 if cate in cate_list else 0 for cate in range(self.cate_num)]
             sample_neg_list = [cate for cate in range(self.cate_num) if cate not in cate_list] #neg target
             # sample one neg example for each pos example when training
             if count < train_group_num:
@@ -260,16 +224,16 @@ class Runner(object):
             elif count < train_group_num + valid_group_num:
                 count += 1
                 neg_ent_list = list(np.random.choice(np.array(sample_neg_list, dtype=int), self.p.neg_for_test, replace=True))
-                gc_group_valid[group_id] = [cate_list, neg_ent_list]
                 for cate in cate_list:
                     gc_valid_edge.append([group_id,cate])
+                    gc_valid_target.append(cate_label)
                     gc_valid_neg_edge.append([[group_id, neg_ent] for neg_ent in neg_ent_list])
             else:
                 count += 1
                 neg_ent_list = list(np.random.choice(np.array(sample_neg_list, dtype=int), self.p.neg_for_test, replace=True))
-                gc_group_test[group2id[group]] = [cate_list, neg_ent_list]
                 for cate in cate_list:
                     gc_test_edge.append([group_id,cate])
+                    gc_test_target.append(cate_label)
                     gc_test_neg_edge.append([[group_id, neg_ent] for neg_ent in neg_ent_list])
 
         print('Avg. group/group', 2*(len(gc_train_edge)+len(gc_valid_edge)+len(gc_test_edge))/self.group_num)
@@ -279,6 +243,9 @@ class Runner(object):
         self.gc_split_edge['valid']['neg_edge'] = torch.LongTensor(gc_valid_neg_edge)
         self.gc_split_edge['test']['edge'] = torch.LongTensor(gc_test_edge)
         self.gc_split_edge['test']['neg_edge'] = torch.LongTensor(gc_test_neg_edge)
+
+        self.gc_split_edge['valid']['target'] = torch.Tensor(gc_valid_target)
+        self.gc_split_edge['test']['target'] = torch.Tensor(gc_test_target)
 
 
     def fit(self, run_id):
@@ -292,7 +259,10 @@ class Runner(object):
             self.logger.info('Successfully Loaded previous model')
 
         if self.p.only_test: # test
-            valid_results, test_results = self.evaluate_sample()
+            if self.p.eval_sample:
+                valid_results, test_results = self.evaluate_sample()
+            else:
+                valid_results, test_results = self.evaluate_all()
             for key in valid_results.keys():
                 self.metrics[key].add_result(0, (100 * valid_results[key], 100 * test_results[key]))
 
@@ -312,7 +282,10 @@ class Runner(object):
 
                 #eval
                 if epoch % self.p.eval_step == 0:
-                    results = self.evaluate_sample()
+                    if self.p.eval_sample:
+                        results = self.evaluate_sample()
+                    else:
+                        results = self.evaluate_all()
                     valid_results, test_results = results
                     self.logger.info(
                         f'Epoch: {epoch:02d}, 'f'Loss: {train_loss:.4f}, 'f'Valid: {valid_results}%, 'f'Test: {test_results}%')
@@ -468,17 +441,12 @@ class Runner(object):
     @torch.no_grad()
     def evaluate_sample(self):
         self.model.eval()
-        if self.p.train_user:
-            self.predictor_user.eval()
-        if self.p.train_group:
-            self.predictor_group.eval()
+        self.predictor_group.eval()
 
         pos_valid_preds = []
         neg_valid_preds = []
         neg_test_preds = []
         pos_test_preds = []
-
-        # calculate group-cate scores
         split_edge = self.gc_split_edge
         pos_valid_edge = split_edge['valid']['edge']
         neg_valid_edge = split_edge['valid']['neg_edge']
@@ -507,14 +475,78 @@ class Runner(object):
         neg_valid_pred = torch.cat(neg_valid_preds, dim=0)  # (step*batch,100)
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
         neg_test_pred = torch.cat(neg_test_preds, dim=0)  # (step*batch,100)
-        valid_results = eval_mrr_ndcg(pos_valid_pred, neg_valid_pred)
-        test_results = eval_mrr_ndcg(pos_test_pred, neg_test_pred)
+        valid_results = eval_pos_neg(pos_valid_pred, neg_valid_pred)
+        test_results = eval_pos_neg(pos_test_pred, neg_test_pred)
 
         return valid_results, test_results
 
     @torch.no_grad()
     def evaluate_all(self):
         self.model.eval()
+        self.predictor_group.eval()
+        split_edge = self.gc_split_edge
+        pos_valid_edge = split_edge['valid']['edge']
+        valid_target = split_edge['valid']['target'] #[n_valid_source, n_target_all]
+        pos_test_edge = split_edge['test']['edge']
+        test_target = split_edge['test']['target']
+
+        #get node representations
+        if self.p.only_GE:
+            h_group, h_cate, self.h_user, self.h_item = self.model(self.x_user, self.x_item, self.ui_graph, self.ic_graph, self.ug_graph)
+        else:
+            h_group, h_cate, self.h_user, self.h_item = self.model(self.x_user, self.x_item, self.ui_graph, self.ic_graph, self.ug_graph, u_degree = self.user_degree, i_degree = self.item_degree)
+
+        # valid group-cate scores
+        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size):
+            source = pos_valid_edge[perm].t()[0] #[B]
+            target = pos_valid_edge[perm].t()[1] #[B]
+            target_label = valid_target[perm] #[B, n_target_all]
+            source_emb = h_group[source].unsqueeze(1).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_group.size(-1)) #[B, n_target, dim]
+            all_target_emb = h_cate.unsqueeze(0).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_cate.size(-1))#[B, n_target, dim]
+            pred = self.predictor_group(source_emb,all_target_emb).view(source.size(0), -1) #[B*n_target] → [B, n_target]
+            argsort = torch.argsort(pred, dim=1, descending=True)  # [batch, N_target] #argsort返回按从大到小排列对应的原始idx
+            ranking_list = []
+            # 替换掉其它干扰项为-1e10
+            for j in range(source.size(0)):
+                target_label_j = target_label[j]
+                target_label_j[target[j]] = 0  # 去掉本身
+                filt = torch.nonzero(target_label_j)
+                pred[j, filt] = -1e10
+                pos_rank = torch.nonzero(argsort[j] == target[j], as_tuple=False)
+                pos_rank = pos_rank.item() + 1
+                ranking_list.append(pos_rank)
+        print('valid pos rank', ranking_list)
+        ranking_list = torch.tensor(ranking_list)
+        valid_results = get_metrics(ranking_list, len(ranking_list))
+
+        # test group-cate scores
+        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
+            source = pos_test_edge[perm].t()[0] #[B]
+            target = pos_test_edge[perm].t()[1] #[B]
+            target_label = test_target[perm] #[B, n_target_all]
+            source_emb = h_group[source].unsqueeze(1).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_group.size(-1)) #[B, n_target, dim]
+            all_target_emb = h_cate.unsqueeze(0).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_cate.size(-1))#[B, n_target, dim]
+            pred = self.predictor_group(source_emb,all_target_emb).view(source.size(0), -1) #[B*n_target] → [B, n_target]
+            argsort = torch.argsort(pred, dim=1, descending=True)  # [batch, N_target] #argsort返回按从大到小排列对应的原始idx
+            ranking_list = []
+            # 替换掉其它干扰项为-1e10
+            for j in range(source.size(0)):
+                target_label_j = target_label[j]
+                target_label_j[target[j]] = 0  # 去掉本身
+                filt = torch.nonzero(target_label_j)
+                pred[j, filt] = -1e10
+                pos_rank = torch.nonzero(argsort[j] == target[j], as_tuple=False)
+                pos_rank = pos_rank.item() + 1
+                ranking_list.append(pos_rank)
+        print('test pos rank', ranking_list)
+        ranking_list = torch.tensor(ranking_list)
+        test_results = get_metrics(ranking_list, len(ranking_list))
+
+        return valid_results, test_results
+
+
+
+
 
 
     def load_model(self, load_path):
@@ -586,10 +618,11 @@ if __name__ == '__main__':
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
     parser.add_argument('-num_workers', type=int, default=0, help='Number of processes to construct batches')
     parser.add_argument('-seed', dest='seed', default=2345, type=int, help='Seed for randomization')
+    parser.add_argument('-eval_sample', default=False, help='eval by sampling')
     parser.add_argument('-only_test', default=False, help='only test')
 
     # gcn
-    parser.add_argument('-only_GE', default=False, help='evaluate on group or author') #only_GE
+    parser.add_argument('-only_GE', default=True, help='evaluate on group or author') #only_GE
     parser.add_argument('-graph_based', default='GCN', help='Only use graph when encode author and group')  # /GCN/GAT/GraphSage/RGCN/RGAT/HGT
     parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')  # kg 初始dim
     parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')  # KG 隐层
@@ -604,7 +637,7 @@ if __name__ == '__main__':
 
     #MMAN
     parser.add_argument('-view_num', default=3, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default ='GMPool',help='how to get  group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN, None表示不从作者聚合信息到组织
+    parser.add_argument('-i2g_method', default ='degree',help='how to get  group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN, None表示不从作者聚合信息到组织
 
     # predict layer
     parser.add_argument('-score_method', default='mv_score', help='Use sampling or not')  # MLP/mv_score
