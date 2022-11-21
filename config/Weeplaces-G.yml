@@ -1,0 +1,48 @@
+#basic
+use_wandb: False
+store_name: 'testrun'
+dataset: 'weeplaces'
+data_size: 1
+load_embedding: False
+logdir: './log/'
+restore: False
+    
+#trai and test
+train_user: True
+train_group: True
+use_attribute: False
+neg_for_test: 100
+batch: 128
+optimizer: 'AdamW'
+scheduler: 'plateau'
+gpu: '0'
+epoch: 30
+l2: 0.0
+lr: 0.001
+bias: 'store_true'
+num_workers: 0
+seed: 2345
+only_test: False
+
+#gcn
+graph_based: 'RGCN'
+init_dim: 128
+gcn_dim: 128
+gcn_layer: 4
+embed_dim: 128
+dropout: 0.1
+hid_drop: 0.1
+gcn_node_residual: False
+gcn_node_concat: False
+
+#only_GE
+only_GE: False
+
+#MMAN
+view_num: 3
+i2g_method: 'MMAN'
+att_head: 1
+
+# predict layer
+score_method: 'MLP'
+predict_layer: 3
