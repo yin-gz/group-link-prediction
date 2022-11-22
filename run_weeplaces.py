@@ -617,8 +617,7 @@ if __name__ == '__main__':
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
     parser.add_argument('-num_workers', type=int, default=0, help='Number of processes to construct batches')
-    parser.add_argument('-seed', dest='seed', default=2345, type=int, help='Seed for randomization')
-    parser.add_argument('-eval_sample', default=False, help='eval by sampling')
+    parser.add_argument('-eval_sample', default=True, help='eval by sampling')
     parser.add_argument('-only_test', default=False, help='only test')
 
     # gcn
@@ -637,10 +636,10 @@ if __name__ == '__main__':
 
     #MMAN
     parser.add_argument('-view_num', default=3, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default ='degree',help='how to get  group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN, None表示不从作者聚合信息到组织
+    parser.add_argument('-i2g_method', default =None,help='how to get  group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN, None表示不从作者聚合信息到组织
 
     # predict layer
-    parser.add_argument('-score_method', default='mv_score', help='Use sampling or not')  # MLP/mv_score
+    parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
     parser.add_argument('-predict_layer', default=3, type=int, help='Number of GCN Layers')
 
     # load yaml
@@ -666,11 +665,6 @@ if __name__ == '__main__':
         wandb.init(project='group-link-weeplaces(new)')
         wandb.config.update(args)
 
-        if args.only_GE:
-            wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,user={args.train_user}"
-        else:
-            wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
-
     #set
     metrics = {
         'hits@1': Logger(args.runs),
@@ -686,13 +680,18 @@ if __name__ == '__main__':
         'ndcg@20': Logger(args.runs)
     }
     set_gpu(args.gpu)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
     #######
 
     model = Runner(args, metrics)
     for run_id in range(args.runs):
+        seed = random.randint(1 , 9999)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
         model.fit(run_id)
+        if args.only_GE:
+            wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,user={args.train_user}"
+        else:
+            wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
 
     print('----------------------------------------------')
     for key in metrics.keys():

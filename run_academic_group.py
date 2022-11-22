@@ -775,7 +775,7 @@ class Runner(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-args', help="use args", type=bool, default=False) #if true, args priority is higher than yaml
+    parser.add_argument('-args', help="use args", type=bool, default=True) #if true, args priority is higher than yaml
     parser.add_argument('-config_file', help="configuration file Aminer-G/MAG-G/Weeplaces-G.yml", type=str, required=False, default='Aminer-G.yml')
 
     # basic
@@ -812,7 +812,7 @@ if __name__ == '__main__':
     parser.add_argument('-att_visual', default=False, help='visualize the attention distribution')
 
     # gcn设置部分
-    parser.add_argument('-only_GE', default=True, help='evaluate on group or author')
+    parser.add_argument('-only_GE', default=False, help='evaluate on group or author')
     parser.add_argument('-graph_based', default='GCN', help="use MLP and raw features")  # GCN/GraphSage/GAT/HGT/RGCN
     parser.add_argument('-gcn_layer', default=3, type=int, help='Number of GCN Layers')  # KG 隐层
     parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')  # kg 初始dim
@@ -826,7 +826,7 @@ if __name__ == '__main__':
 
     # MMAN
     parser.add_argument('-view_num', default=3, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default = None, help='how to get group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN/DiffPool/GMPool, None表示不从作者聚合信息到组织
+    parser.add_argument('-i2g_method', default = 'DiffPool', help='how to get group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN/DiffPool/GMPool, None表示不从作者聚合信息到组织
 
     # predict layer
     parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
@@ -834,18 +834,15 @@ if __name__ == '__main__':
 
     # load yaml
     args = parser.parse_args()
-    if args.args:
-        # args priority is higher than yaml
-        opt = yaml.load(open(args.config), Loader=yaml.FullLoader)
+    if args.args:  # args priority is higher than yaml
+        opt = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
         opt.update(vars(args))
         args = opt
-    else:
-        # yaml priority is higher than args
+    else:  # yaml priority is higher than args
         opt = vars(args)
         args = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
         opt.update(args)
         args = opt
-
     args = argparse.Namespace(**args)
 
     if not args.restore:
@@ -858,16 +855,6 @@ if __name__ == '__main__':
         wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
         wandb.init(project='group-link-'+args.dataset+'(new)')
         wandb.config.update(args)
-        if args.only_GE:
-            if args.use_a_attribute:
-                wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X+A,author={args.train_author}"
-            else:
-                wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X,author={args.train_author}"
-        else:
-            if args.use_a_attribute:
-                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X+A,{args.graph_based},{args.score_method},{args.combine_opt},author={args.train_author},head={args.att_head}"
-            else:
-                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X,{args.graph_based},{args.score_method},{args.combine_opt},author={args.train_author},head={args.att_head}"
 
     #set
     metrics = {
@@ -890,7 +877,20 @@ if __name__ == '__main__':
 
     model = Runner(args, metrics)
     for run_id in range(args.runs):
+        seed = random.randint(1 , 9999)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
         model.fit(run_id)
+        if args.only_GE:
+            if args.use_a_attribute:
+                wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X+A,author={args.train_author}"
+            else:
+                wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X,author={args.train_author}"
+        else:
+            if args.use_a_attribute:
+                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X+A,{args.graph_based},{args.score_method},{args.combine_opt},author={args.train_author},head={args.att_head}"
+            else:
+                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X,{args.graph_based},{args.score_method},{args.combine_opt},author={args.train_author},head={args.att_head}"
 
     for key in metrics.keys():
         print(key)

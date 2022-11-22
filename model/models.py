@@ -112,7 +112,8 @@ class GroupAgg(torch.nn.Module):
 		h_group = self.ln(h_group)
 		return h_group, alpha
 
-	def forward(self, each_i, i2g_graph, i_degree, group_num = 0 , h_group = None, i_graph = None):
+	def forward(self, h_i, i2g_graph, i_degree, group_num = 0 , h_group = None, i_graph = None):
+		each_i = torch.index_select(h_i, 0, i2g_graph[0])  # 选出source node 对应的表征
 		if self.p.i2g_method == 'degree':
 			return self.i2g_degree(each_i, i2g_graph, i_degree)
 		elif self.p.i2g_method == 'avg':
@@ -129,7 +130,7 @@ class GroupAgg(torch.nn.Module):
 			return h_group, None
 		elif self.p.i2g_method == 'DiffPool':
 			#need to be modified, need author cooperation as input, assume s is defined
-			h_group = self.diff_pool(each_i, i2g_graph[1])
+			h_group = self.diff_pool(h_i, adj = i_graph, index = i2g_graph[1])
 			h_group = self.group_lin(h_group)
 			return h_group, None
 		elif self.p.i2g_method == 'GMPool':
@@ -242,16 +243,13 @@ class B2GModel(GE):
 			return h_group, h_cate, self.h_user, self.h_item
 
 		#user2group aggregate/item2cate aggregate
-		each_u = torch.index_select(self.h_user, 0, agg_graph_ug[0])
-		each_i = torch.index_select(self.h_item, 0, agg_graph_ic[0])
 		if self.p.i2g_method is not None:
-			h_group, att_user = self.u2g_agg(each_u, agg_graph_ug, u_degree, group_num = group_num , h_group = h_group)
-			h_cate, att_item = self.i2c_agg(each_i, agg_graph_ic, i_degree, group_num = cate_num , h_group = h_cate)
+			h_group, att_user = self.u2g_agg(self.h_user, agg_graph_ug, u_degree, group_num = group_num , h_group = h_group)
+			h_cate, att_item = self.i2c_agg(self.h_item, agg_graph_ic, i_degree, group_num = cate_num , h_group = h_cate)
 		else:
 			h_group = None
 			h_cate = None
 
-		del each_u, each_i
 		return h_group, h_cate, self.h_user, self.h_item
 
 
@@ -333,9 +331,8 @@ class G2GModel(GE):
 			h_group = x_union[author_num:]
 
 		# author2group聚合
-		each_i = torch.index_select(h_author, 0, agg_graph[0])  # 选出source node 对应的表征
 		# 依据节点度设置节点权重
-		h_group, att = self.i2g_agg(each_i, agg_graph, degree, group_num, h_group, i_graph = aa_graph)
+		h_group, att = self.i2g_agg(h_author, agg_graph, degree, group_num, h_group, i_graph = aa_graph)
 
 		if self.p.att_visual:
 			return h_author, h_group, att
