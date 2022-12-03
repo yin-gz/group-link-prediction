@@ -508,7 +508,7 @@ class Runner(object):
         # print the final results of current run
         for key in self.metrics.keys():
             print(key)
-            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = args.use_wandb)
+            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = args.use_wandb, best_mrr_epoch = self.best_epoch)
 
     # 一个训练epoch
     def run_epoch(self):
@@ -523,7 +523,7 @@ class Runner(object):
         step = 0
         epoch_length = gpos_train_edge.size(0)
 
-        for perm in DataLoader(range(epoch_length), self.p.batch_size, shuffle=True):
+        for perm in DataLoader(range(epoch_length), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             step += 1
             self.optimizer.zero_grad()
             pos_edge = gpos_train_edge[perm].t()
@@ -660,7 +660,7 @@ class Runner(object):
 
         # 计算valid数据集的分数
         # 每条正边都有100个负例
-        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True):
+        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             pos_edge = pos_valid_edge[perm].t()
             # 对于每条正边，保留edge[0]不变，采样100条负例子
             neg_target = neg_valid_edge[perm][:, :, 1]
@@ -671,7 +671,7 @@ class Runner(object):
         neg_valid_pred = torch.cat(neg_valid_preds, dim=0)  # (step*batch,100)
 
         # 计算test数据集的分数
-        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
+        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size, num_workers= self.p.num_workers):
             pos_edge = pos_test_edge[perm].t()
             # 对于每条正边，保留edge[0]不变，采样100条负例子
             neg_target = neg_test_edge[perm][:, :, 1]
@@ -784,9 +784,9 @@ if __name__ == '__main__':
     parser.add_argument('-log_dir', default='./log/', help='Log directory')
     parser.add_argument('-config_dir', default='./config/', help='Config directory')
     parser.add_argument('-store_name', default='testrun', help='Set run name for saving/restoring models')
-    parser.add_argument('-dataset', default='org-community', help='Dataset to use, default: OrgPaper')
+    parser.add_argument('-dataset', default='MAG', help='Dataset to use(org-community/MAG), default: OrgPaper')
     parser.add_argument('-runs', default=1, help='Number of runs')
-    parser.add_argument('-use_a_attribute', default=False, help='use author attribute')
+    parser.add_argument('-use_a_attribute', default=True, help='use author attribute')
     parser.add_argument('-use_g_attribute', default=False, help='use group attribute')
     parser.add_argument('-restore', default=False, help='Restore from the previously saved model')  # 是否载入原模型，默认为False
     parser.add_argument('-use_sample', default = False, help='Use sampling or not') #only Aminer: GAT/HGT, use_sample 时train_author必须为False
@@ -826,7 +826,7 @@ if __name__ == '__main__':
 
     # MMAN
     parser.add_argument('-view_num', default=3, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default = 'DiffPool', help='how to get group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN/DiffPool/GMPool, None表示不从作者聚合信息到组织
+    parser.add_argument('-i2g_method', default = 'GMPool', help='how to get group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN/DiffPool/GMPool, None表示不从作者聚合信息到组织
 
     # predict layer
     parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
@@ -851,11 +851,6 @@ if __name__ == '__main__':
     else:
         args.store_name = 'testrun_09_03_2022_104840'  # 自定义的文件名
 
-    if args.use_wandb:
-        wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
-        wandb.init(project='group-link-'+args.dataset+'(new)')
-        wandb.config.update(args)
-
     #set
     metrics = {
         'hits@1': Logger(args.runs),
@@ -871,12 +866,14 @@ if __name__ == '__main__':
         'ndcg@20': Logger(args.runs)
     }
     set_gpu(args.gpu)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
     #######
 
     model = Runner(args, metrics)
     for run_id in range(args.runs):
+        if args.use_wandb:
+            wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
+            wandb.init(project='group-link-' + args.dataset + '(new)')
+            wandb.config.update(args)
         seed = random.randint(1 , 9999)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -888,10 +885,11 @@ if __name__ == '__main__':
                 wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X,author={args.train_author}"
         else:
             if args.use_a_attribute:
-                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X+A,{args.graph_based},{args.score_method},{args.combine_opt},author={args.train_author},head={args.att_head}"
+                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X+A,{args.graph_based},{args.score_method},author={args.train_author},head={args.att_head}"
             else:
-                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X,{args.graph_based},{args.score_method},{args.combine_opt},author={args.train_author},head={args.att_head}"
+                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X,{args.graph_based},{args.score_method},author={args.train_author},head={args.att_head}"
 
     for key in metrics.keys():
+        print('----------------------------------------------')
         print(key)
         metrics[key].print_statistics(metrics=key, use_wandb = args.use_wandb)

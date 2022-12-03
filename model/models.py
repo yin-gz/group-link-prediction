@@ -134,6 +134,7 @@ class GroupAgg(torch.nn.Module):
 			h_group = self.group_lin(h_group)
 			return h_group, None
 		elif self.p.i2g_method == 'GMPool':
+			i_graph = None
 			if i_graph is None:
 				self.gm_pool = self.gm_pool_i
 			else:

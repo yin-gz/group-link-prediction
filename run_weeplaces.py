@@ -311,7 +311,7 @@ class Runner(object):
         #print the final results of current run
         for key in self.metrics.keys():
             print(key)
-            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = self.p.use_wandb)
+            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = self.p.use_wandb, best_mrr_epoch = self.best_epoch)
 
 
     def train_epoch(self):
@@ -330,7 +330,7 @@ class Runner(object):
         epoch_length = min(gpos_train_edge.size(0), upos_train_edge.size(0))
 
         print('total train step', epoch_length/self.p.batch_size)
-        for perm in DataLoader(range(epoch_length), self.p.batch_size, shuffle=True):
+        for perm in DataLoader(range(epoch_length), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             step += 1
             self.optimizer.zero_grad()
             # wandb.watch(self.model)
@@ -455,7 +455,7 @@ class Runner(object):
 
         #valid group-cate scores
         print('valid_edge',pos_valid_edge.size(0))
-        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True):
+        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             edge = pos_valid_edge[perm].t()
             neg_target = neg_valid_edge[perm][:,:,1] #[batch,100,2] → [batch,100]
             pos_out, neg_out = self.run_batch(edge, neg_target)
@@ -464,7 +464,7 @@ class Runner(object):
 
         #test group-cate scores
         print('test_edge', pos_test_edge.size(0))
-        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
+        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size, num_workers= self.p.num_workers):
             edge = pos_test_edge[perm].t()
             neg_target = neg_test_edge[perm][:,:,1]
             pos_out, neg_out = self.run_batch(edge, neg_target)
@@ -497,7 +497,7 @@ class Runner(object):
             h_group, h_cate, self.h_user, self.h_item = self.model(self.x_user, self.x_item, self.ui_graph, self.ic_graph, self.ug_graph, u_degree = self.user_degree, i_degree = self.item_degree)
 
         # valid group-cate scores
-        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size):
+        for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, num_workers= self.p.num_workers):
             source = pos_valid_edge[perm].t()[0] #[B]
             target = pos_valid_edge[perm].t()[1] #[B]
             target_label = valid_target[perm] #[B, n_target_all]
@@ -520,7 +520,7 @@ class Runner(object):
         valid_results = get_metrics(ranking_list, len(ranking_list))
 
         # test group-cate scores
-        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size):
+        for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size, num_workers= self.p.num_workers):
             source = pos_test_edge[perm].t()[0] #[B]
             target = pos_test_edge[perm].t()[1] #[B]
             target_label = test_target[perm] #[B, n_target_all]
@@ -543,11 +543,6 @@ class Runner(object):
         test_results = get_metrics(ranking_list, len(ranking_list))
 
         return valid_results, test_results
-
-
-
-
-
 
     def load_model(self, load_path):
         state = torch.load(load_path)
@@ -616,13 +611,13 @@ if __name__ == '__main__':
     parser.add_argument('-l2', type=float, default=0.0, help='L2 Regularization for Optimizer')
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
-    parser.add_argument('-num_workers', type=int, default=0, help='Number of processes to construct batches')
+    parser.add_argument('-num_workers', type=int, default=8, help='Number of processes to construct batches')
     parser.add_argument('-eval_sample', default=True, help='eval by sampling')
     parser.add_argument('-only_test', default=False, help='only test')
 
     # gcn
     parser.add_argument('-only_GE', default=True, help='evaluate on group or author') #only_GE
-    parser.add_argument('-graph_based', default='GCN', help='Only use graph when encode author and group')  # /GCN/GAT/GraphSage/RGCN/RGAT/HGT
+    parser.add_argument('-graph_based', default='RGCN', help='Only use graph when encode author and group')  # /GCN/GAT/GraphSage/RGCN/RGAT/HGT
     parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')  # kg 初始dim
     parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')  # KG 隐层
     parser.add_argument('-gcn_layer', default=4, type=int, help='Number of GCN Layers')  # KG 隐层
@@ -660,11 +655,6 @@ if __name__ == '__main__':
     else:
         args.store_name = 'testrun_16_07_2022_161501'  # 自定义的文件名
 
-    if args.use_wandb:
-        wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
-        wandb.init(project='group-link-weeplaces(new)')
-        wandb.config.update(args)
-
     #set
     metrics = {
         'hits@1': Logger(args.runs),
@@ -684,14 +674,18 @@ if __name__ == '__main__':
 
     model = Runner(args, metrics)
     for run_id in range(args.runs):
+        if args.use_wandb:
+            wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
+            wandb.init(project='group-link-weeplaces(new)')
+            wandb.config.update(args)
         seed = random.randint(1 , 9999)
         np.random.seed(seed)
         torch.manual_seed(seed)
         model.fit(run_id)
         if args.only_GE:
-            wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,user={args.train_user}"
+            wandb.run.name = f"{run_id}: {args.graph_based},{args.gcn_layer}layer,user={args.train_user}"
         else:
-            wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
+            wandb.run.name = f"{run_id}: {args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
 
     print('----------------------------------------------')
     for key in metrics.keys():
