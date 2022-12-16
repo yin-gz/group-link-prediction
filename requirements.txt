@@ -1,5 +1,9 @@
-numpy==1.18.1
-pandas==1.0.3
-scikit-learn==0.23.1
+numpy==1.23.3
+pandas==1.4.2
 scipy==1.4.1
-torch==1.8.1
+wandb==0.12.21
+torch-geometric==2.0.4
+torch-scatter==2.0.7
+torch-sparse==0.6.12
+ordered_set==4.1.0
+pyYAML==6.0

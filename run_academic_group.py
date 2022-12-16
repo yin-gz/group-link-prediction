@@ -760,11 +760,11 @@ if __name__ == '__main__':
     parser.add_argument('-att_head', default=1, help='att head')
 
     # MMAN
-    parser.add_argument('-view_num', default=4, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default = 'MMAN', help='how to get group embedding according to the author(degree/att/avg/set2set/MMAN/GMPool/None)')
+    parser.add_argument('-view_num', default=0, help='Use sampling or not')  # MMAN: set seeds(m)
+    parser.add_argument('-i2g_method', default = 'MMAN', help='how to get group embedding according to the author(avg/degree/att/set2set/MMAN/MAB/None)')
 
     # predict layer
-    parser.add_argument('-score_method', default='mv_score', help='Use sampling or not')  # MLP/mv_score
+    parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
     parser.add_argument('-predict_layer', default=3, type=int, help='Number of GCN Layers')
 
     # load yaml

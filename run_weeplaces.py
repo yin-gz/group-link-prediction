@@ -623,8 +623,6 @@ if __name__ == '__main__':
                         help='Embedding dimension to give as input to score function')
     parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use in GCN Layer')
     parser.add_argument('-hid_drop', default=0.1, type=float, help='Dropout after GCN')
-    parser.add_argument('-gcn_node_residual', default=False, help='Use kg nodes residual or not')
-    parser.add_argument('-gcn_node_concat', default=False, help='Concat kg_nodes or not')
     parser.add_argument('-att_head', default=1, help='att head')
 
     #MMAN
