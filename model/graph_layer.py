@@ -234,7 +234,6 @@ class MultiHetero(nn.Module):
                 edge_dict_layer[key] = GATConv((-1,-1), self.p.embed_dim)
             else:
                 edge_dict_layer[key] = GCNConv(-1, self.p.embed_dim)
-        print('层信息 ',edge_dict_layer)
         hetero_conv = HeteroConv(edge_dict_layer, aggr='sum')
 
         for _ in range(self.layer):
@@ -243,8 +242,8 @@ class MultiHetero(nn.Module):
     def forward(self, node_type_dict, edge_type_dict):
 
         for conv in self.convs:
-            #输入的x为dict,{'node_type':type_node_tensor(n_type_node,emb)}, 节点与边对应时的编号还是按总的顺序
-            #输入的y为dict,{’rel_type('type1','to','type2')‘:edge(2,type_node_num)}
+            #x: {'node_type':type_node_tensor(n_type_node,emb)}
+            #y: {’rel_type('type1','to','type2')‘:edge(2,type_node_num)}
             node_type_dict = conv(node_type_dict, edge_type_dict)
 
         return node_type_dict['author'], node_type_dict['group']

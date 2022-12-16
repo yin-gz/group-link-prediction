@@ -1,6 +1,5 @@
 from helper import *
 from torch_geometric.nn import Set2Set, SAGPooling, GraphMultisetTransformer
-from model.OtherPools import DiffPool
 from model.graph_layer import *
 from torch_geometric.nn.dense.linear import Linear
 
@@ -64,12 +63,10 @@ class GroupAgg(torch.nn.Module):
 			self.set_pool = Set2Set(self.p.embed_dim, processing_steps=1) #global_add_pool/global_mean_pool/global_max_pool/GlobalAttention
 			self.group_lin = Linear(2*self.p.embed_dim, self.p.embed_dim)
 		elif self.p.i2g_method == 'GMPool':
-			#if i2i graph is given(only for academic group)
-			self.gm_pool_g = GraphMultisetTransformer(self.p.embed_dim,self.p.embed_dim,self.p.embed_dim, pool_sequences = ['GMPool_G'], num_heads=1)
+			#if i2i graph is given (only for academic group)
+			self.gm_pool_g = GraphMultisetTransformer(self.p.embed_dim, self.p.embed_dim,self.p.embed_dim, pool_sequences = ['GMPool_G'], num_heads=1)
 			#if i2i graph is not given
 			self.gm_pool_i = GraphMultisetTransformer(self.p.embed_dim, self.p.embed_dim, self.p.embed_dim, pool_sequences=['GMPool_I'], num_heads=1)
-		elif self.p.i2g_method == 'DiffPool': #only for academic group
-			self.diff_pool = DiffPool(self.p.embed_dim, self.p.embed_dim, self.p.embed_dim, self.p.group_num)
 
 
 	def i2g_degree(self, each_i, agg_graph, degree):
@@ -99,7 +96,7 @@ class GroupAgg(torch.nn.Module):
 		return h_group, alpha
 
 	def i2g_MMAN(self, each_i, agg_graph, num_group):
-		x_i = self.individual_lin(each_i)  # 线性变换
+		x_i = self.individual_lin(each_i)
 		x_i_K = self.lin_src_K(x_i).view(-1, self.heads, self.p.gcn_dim).unsqueeze(1).expand(-1, self.p.view_num, -1,
 																							 -1)  # (n_edge, view_num, heads, dim)
 		x_i_V = self.lin_src_V(x_i).view(-1, self.heads, self.p.gcn_dim).unsqueeze(1).expand(-1, self.p.view_num, -1,
@@ -113,7 +110,7 @@ class GroupAgg(torch.nn.Module):
 		return h_group, alpha
 
 	def forward(self, h_i, i2g_graph, i_degree, group_num = 0 , h_group = None, i_graph = None):
-		each_i = torch.index_select(h_i, 0, i2g_graph[0])  # 选出source node 对应的表征
+		each_i = torch.index_select(h_i, 0, i2g_graph[0])
 		if self.p.i2g_method == 'degree':
 			return self.i2g_degree(each_i, i2g_graph, i_degree)
 		elif self.p.i2g_method == 'avg':
@@ -125,7 +122,7 @@ class GroupAgg(torch.nn.Module):
 			self.heads = self.p.att_head
 			return self.i2g_att(each_i, i2g_graph, h_group)
 		elif self.p.i2g_method == 'set2set':  # set2set
-			h_group = self.pool(each_i, i2g_graph[1])  # 前一个是emb,后面是该emb对应的组序号,取出序号相同的节点embedding运用pool函数聚合到一起，最后返回[n_index,embedding]
+			h_group = self.set_pool(each_i, i2g_graph[1])
 			h_group = self.group_lin(h_group)
 			return h_group, None
 		elif self.p.i2g_method == 'DiffPool':
@@ -283,18 +280,21 @@ class G2GModel(GE):
 
 	def forward(self, x_author, x_group, aa_graph, ag_graph, degree=None, group_num=None, author_index=None):
 
-		agg_graph = ag_graph  # 聚合用
+		agg_graph = ag_graph
 		if group_num is None:
 			group_num = self.num_group
 		if x_author is None:
 			x_author = self.author_embedding_layer(
 				torch.LongTensor([idx for idx in range(self.num_author)]).to(ag_graph.device))
-		if x_group is None:
-			x_group = torch.zeros(group_num, self.p.init_dim).to(ag_graph.device)  # 初始化为全0张量
+		if x_group is None and self.p.i2g_method != 'att':
+			x_group = torch.zeros(group_num, self.p.init_dim).to(ag_graph.device)
 		if author_index is not None:
 			x_author = torch.index_select(x_author, 0, author_index)
 
-		if self.p.graph_based == 'HGT':
+		if self.p.only_attribute:
+			h_author = x_author
+			h_group = x_group
+		elif self.p.graph_based == 'HGT':
 			edge_type_dict = {}
 			node_type_dict = {}
 			edge_type_dict[('author', 'to', 'author')] = aa_graph
@@ -306,8 +306,6 @@ class G2GModel(GE):
 			h_author = node_type_dict['author']
 			h_group = node_type_dict['group']
 		else:
-			# 合并成同一个图，使用graph模型传递
-			# 顺序为: group\cate\user\item
 			x_union = torch.cat([x_author, x_group], dim=0)
 			author_num = x_author.size(0)
 			ag_graph = torch.stack((ag_graph[0], ag_graph[1] + author_num))
@@ -331,23 +329,21 @@ class G2GModel(GE):
 			h_author = x_union[:author_num]
 			h_group = x_union[author_num:]
 
-		# author2group聚合
-		# 依据节点度设置节点权重
-		h_group, att = self.i2g_agg(h_author, agg_graph, degree, group_num, h_group, i_graph = aa_graph)
-
-		if self.p.att_visual:
-			return h_author, h_group, att
+		# author2group aggregate
+		if self.p.only_GE:
+			return h_author, h_group
 		else:
+			h_group, att = self.i2g_agg(h_author, agg_graph, degree, group_num, h_group, i_graph=aa_graph)
 			return h_author, h_group
 
 
 
 class LinkPredictor(torch.nn.Module):
-	def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout, score_method, i2g_method, view_num):
+	def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout, score_method, i2g_method, view_num, param = None):
 		super(LinkPredictor, self).__init__()
-
+		self.p = param
 		self.score_method = score_method
-		if i2g_method == 'MMAN' and self.score_method != 'mv_score':
+		if i2g_method == 'MMAN' and self.score_method != 'mv_score' and self.p.only_GE is False:
 			l_in_channels = view_num * in_channels
 		else:
 			l_in_channels = in_channels
@@ -360,12 +356,10 @@ class LinkPredictor(torch.nn.Module):
 		self.reset_parameters()
 		self.dropout = dropout
 
-
 	def reset_parameters(self):
 		for lin in self.lins:
 			lin.reset_parameters()
 
-	#原有的添加三层MLP预测出分数
 	def forward(self, x_i, x_j):
 		# (batch, dim)/(batch, view_num, dim)
 		if self.score_method == 'MLP':
@@ -385,7 +379,6 @@ class LinkPredictor(torch.nn.Module):
 				x_i = x_i.unsqueeze(1)
 				x_j = x_j.unsqueeze(1)
 
-			#view_list = x_j.chunk(x_j.size(1), 1)
 			view_list = x_j
 			multi_result = []
 			# for view_s in view_list:

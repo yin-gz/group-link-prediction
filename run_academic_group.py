@@ -49,11 +49,11 @@ class Runner(object):
         if self.p.train_group:
             self.predictor_group = LinkPredictor(self.p.embed_dim, self.p.embed_dim, 1, self.p.predict_layer,
                                                  self.p.dropout, self.p.score_method, self.p.i2g_method,
-                                                 self.p.view_num).to(self.device)
+                                                 self.p.view_num, self.p).to(self.device)
             param_optimizer += list(self.predictor_group.named_parameters())
         if self.p.train_author:
             self.predictor_author = LinkPredictor(self.p.embed_dim, self.p.embed_dim, 1, self.p.predict_layer,
-                                                self.p.dropout, 'MLP', None, self.p.view_num).to(self.device)
+                                                self.p.dropout, 'MLP', None, self.p.view_num, self.p).to(self.device)
             param_optimizer += list(self.predictor_author.named_parameters())
         if self.p.use_g_attribute:
             self.group_attemb_layer = AttributeEmb(self.group_attribute,
@@ -256,7 +256,7 @@ class Runner(object):
             temp.append([self.author2id[i], self.author2id[i]])
         temp = torch.LongTensor(temp).t()
         self.author_degree = scatter(torch.ones_like(temp[0]), temp[1], dim=0, reduce='sum').to(self.device)  # 计算每个节点的度
-        print('avg author degree', torch.mean(self.author_degree.float()))
+        print('I2I', torch.mean(self.author_degree.float()))
         self.a_graph = torch.LongTensor(self.a_graph)
         self.A = ssp.csr_matrix((torch.ones_like(self.a_graph[0]), (self.a_graph[0], self.a_graph[1])), shape=(self.author_num, self.author_num))
         self.a_graph = self.a_graph.to(self.device).t()
@@ -325,14 +325,11 @@ class Runner(object):
                                 test_group_coo[j_id].append(i_id)
                     except:
                         pass
-        print('train组织总数', len(group_train_set))
-        print('有合作的train组织数', len(train_group_coo))
-        print('valid组织总数', len(group_valid_set))
-        print('有合作的valid组织数', len(valid_group_coo))
-        print('test组织总数', len(group_test_set))
-        print('有合作的test组织数', len(test_group_coo))
-        print('组织内部合作比例', float(in_coo_num / (in_coo_num + out_coo_num)))
-        print('组织外部合作比例', float(out_coo_num / (in_coo_num + out_coo_num)))
+        print('train group num', len(group_train_set))
+        print('valid group num', len(group_valid_set))
+        print('test group num', len(group_test_set))
+        print('cooperate inside an institution:', float(in_coo_num / (in_coo_num + out_coo_num)))
+        print('cooperate between two institutions:', float(out_coo_num / (in_coo_num + out_coo_num)))
 
         # generate pos/neg edge for validating
         all_group_set = set([i for i in range(self.group_num)])
@@ -361,7 +358,7 @@ class Runner(object):
         self.group_split_edge['test']['neg_edge'] = torch.LongTensor(group_test_neg_edge)
         print('valid group edge size', self.group_split_edge['valid']['edge'].size())
         print('test group edge size', self.group_split_edge['test']['edge'].size())
-        print('group/group',  2 * (len(group_train_edge) + len(group_valid_edge) + len(group_test_edge)) / self.group_num)
+        print('G2G',  2 * (len(group_train_edge) + len(group_valid_edge) + len(group_test_edge)) / self.group_num)
         if self.p.use_g_attribute:
             self.group_attribute = self.load_group_attribute()
         else:
@@ -408,7 +405,7 @@ class Runner(object):
     def load_author_attribute(self):
         with open(self.p.data_dir + self.p.dataset + '/author_attr.pkl', 'rb') as f:
             data_df = pickle.load(f)
-        author_attr = {'title_emb': [], 'n_citation': [], 'n_pub': []}  # 逐原Id生成
+        author_attr = {'title_emb': [], 'n_citation': [], 'n_pub': []}
 
         # title Dimension Reduction
         from sklearn.decomposition import PCA
@@ -418,7 +415,7 @@ class Runner(object):
         dim_model = PCA(n_components = title_dim)
         emb_matrix = data_df['title_emb'].to_numpy()
         emb_matrix = np.stack(emb_matrix, axis=0)
-        emb_matrix = dim_model.fit_transform(emb_matrix)  # 将X降维(默认二维)后保存到Y中
+        emb_matrix = dim_model.fit_transform(emb_matrix)
 
         data_df['title_emb'] = list(emb_matrix)
         no_att_author = 0
@@ -462,11 +459,9 @@ class Runner(object):
                 self.x_author  = self.author_attemb_layer(self.author_attribute)
 
         if self.p.only_test:
-            results = self.evaluate_Recommend()
-            for key, result in results.items():
-                self.metrics[key].add_result(run_id, result)
-        elif self.p.att_visual:
-            self.case_study(['group_12905-204983213'])
+            valid_results, test_results = self.evaluate_Recommend()
+            for key, result in valid_results.items():
+                self.metrics[key].add_result(run_id, (100 * valid_results[key], 100 * test_results[key]))
         else:
             kill_cnt = 0
             for epoch in range(self.p.max_epochs):
@@ -488,7 +483,7 @@ class Runner(object):
                     self.logger.info(
                         f'Epoch: {epoch:02d}, 'f'Loss: {train_loss:.4f}, 'f'Valid: {valid_results}%, 'f'Test: {test_results}%')
                     for key in valid_results.keys():
-                        self.metrics[key].add_result(0, (100 * valid_results[key], 100 * test_results[key]))
+                        self.metrics[key].add_result(run_id, (100 * valid_results[key], 100 * test_results[key]))
                         if self.p.use_wandb:
                             wandb.log({f"valid/{key}": 100 * valid_results[key], f"test/{key}": 100 * test_results[key], "epoch": epoch})
                     if valid_results['mrr'] > self.best_val_value:
@@ -508,9 +503,8 @@ class Runner(object):
         # print the final results of current run
         for key in self.metrics.keys():
             print(key)
-            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = args.use_wandb, best_mrr_epoch = self.best_epoch)
+            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = args.use_wandb)
 
-    # 一个训练epoch
     def run_epoch(self):
         self.model.train()
         self.predictor_group.train()
@@ -552,8 +546,7 @@ class Runner(object):
             if self.p.train_group:
                 loss += group_loss
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  # 梯度裁剪，大于1时则直接裁
-            # torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
 
             num_examples = pos_out.size(0)
@@ -591,11 +584,11 @@ class Runner(object):
                 for index, neg_target_id in enumerate(neg_target[batch_id]):
                     neg_target[batch_id][index] = old2new[neg_target_id.item()]
             # substitute old group idx to new_idx in ag_graph
-            ag_graph = []
+            ag_graph = [[],[]]
             for old_group_id in old_group_set:
                 for author_id in self.g2a[old_group_id]:
-                    ag_graph.append([author_id, old2new[old_group_id]])
-            ag_graph = torch.LongTensor(ag_graph).to(self.device).t()
+                    ag_graph[0].append(author_id)
+                    ag_graph[1].append(old2new[old_group_id])
 
             if self.p.use_sample:
                 # generate author batch_set
@@ -608,7 +601,7 @@ class Runner(object):
                 for k in range(0, self.p.gcn_layer - 1):
                     author_nodes = author_nodes.union(hop_author[k])
                 author_nodes = list(author_nodes)
-                aa_graph = self.A[author_nodes, :][:, author_nodes]  #取出author_nodes间涉及的边, author会重新编号
+                aa_graph = self.A[author_nodes, :][:, author_nodes]  #sample author nodes and resort their indexs
                 source_a, target_a, r = ssp.find(aa_graph)
                 aa_graph = torch.stack([torch.LongTensor(source_a).to(self.device), torch.LongTensor(target_a).to(self.device)], 0)
                 # generate new idx according to the batch_set
@@ -619,6 +612,7 @@ class Runner(object):
                 ag_graph = torch.LongTensor(ag_graph).to(self.device)
                 author_nodes = torch.LongTensor(author_nodes).to(self.device)
             else:
+                ag_graph = torch.LongTensor(ag_graph).to(self.device)
                 author_nodes = None
                 aa_graph = self.a_graph
 
@@ -643,7 +637,6 @@ class Runner(object):
 
 
     @torch.no_grad()
-    # 一次验证,只有组织使用recommend推荐
     def evaluate_Recommend(self):
         self.model.eval()
         self.predictor_group.eval()
@@ -658,11 +651,9 @@ class Runner(object):
         neg_test_preds = []
         pos_test_preds = []
 
-        # 计算valid数据集的分数
-        # 每条正边都有100个负例
+        # calculate valid score
         for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             pos_edge = pos_valid_edge[perm].t()
-            # 对于每条正边，保留edge[0]不变，采样100条负例子
             neg_target = neg_valid_edge[perm][:, :, 1]
             pos_valid_out, neg_valid_out = self.run_batch(pos_edge, neg_target)#[B,1] [B,num_neg]
             pos_valid_preds += [pos_valid_out.squeeze().cpu()]
@@ -670,10 +661,9 @@ class Runner(object):
         pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
         neg_valid_pred = torch.cat(neg_valid_preds, dim=0)  # (step*batch,100)
 
-        # 计算test数据集的分数
+        # calculate test score
         for perm in DataLoader(range(pos_test_edge.size(0)), self.p.batch_size, num_workers= self.p.num_workers):
             pos_edge = pos_test_edge[perm].t()
-            # 对于每条正边，保留edge[0]不变，采样100条负例子
             neg_target = neg_test_edge[perm][:, :, 1]
             pos_test_out, neg_test_out = self.run_batch(pos_edge, neg_target)  # [B,1] [B,num_neg]
             pos_test_preds += [pos_test_out.squeeze().cpu()]
@@ -684,60 +674,6 @@ class Runner(object):
         valid_results = eval_pos_neg(pos_valid_pred, neg_valid_pred)
         test_results = eval_pos_neg(pos_test_pred, neg_test_pred)
         return valid_results, test_results
-
-    @torch.no_grad()
-    #输入group_id集合，输出该小组每个成员的不同视图的注意力分布，以及每个group对应的推荐TOP10小组
-    def case_study(self, group_id_list):
-        self.model.eval()
-        # 构建ag_graph,graph_id为新group
-        ag_graph = []
-        #att: (n_edge, set_seeds, heads)  或者 (n_edge,heads)
-        for group_id in group_id_list:
-            for author_id in self.g2a[self.group2id[group_id]]:
-                ag_graph.append([author_id, 0])
-            ag_graph = torch.LongTensor(ag_graph).to(self.device).t()
-            self.h_author, h_group, att = self.model(self.x_author, self.x_group, self.a_graph, ag_graph, degree=self.author_degree, group_num=1)
-            print('group_id', group_id)
-            print('member list', self.group_info[group_id]['member_name'])
-            #可视化该组的成员及每个成员对应的注意力权重
-            #不采样，全量group版本
-            '''
-            index = torch.eq(self.ag_graph[1],self.group2id[group_id])
-            group_att = att[index].squeeze(-1) #[n_group, set_seeds]
-            print('member att', group_att)
-            author_id_list = self.ag_graph[0][index].tolist()
-            author_list = [self.id2author[author_id] for author_id in author_id_list]
-            print('member id list', author_list)
-            '''
-            # 采样版
-            group_att = att.squeeze(-1) #[n_member, set_seeed, 1]
-            print('member att', group_att)
-            author_id_list = ag_graph[0].tolist()
-            author_list = [self.id2author[author_id] for author_id in author_id_list]
-            print('member id list', author_list)
-            degree_dis = self.author_degree[ag_graph[0]]
-            print('degree 分布', degree_dis)
-
-            #逐个输出每个人的注意力
-            # i 是相对于组织总长度来索引的
-            group_info = self.group_info[group_id]
-            member_id2name = {group_info['member'][i]:group_info['member_name'][i] for i in range(len(group_info['member']))}
-            for i, author_id in enumerate(author_list):
-                print('member_id:',author_id, 'degree',degree_dis[i], 'member_name:',member_id2name[author_id] , 'att:', group_att[i])
-            '''
-            #构造所有的edge对， 共num_group个
-            pred_results = []
-            for idx in DataLoader(range(self.group_num), self.p.batch_size):
-                group_id_batch = torch.LongTensor([self.group2id[group_id] for i in range (self.p.batch_size)])
-                pred_results += [self.predictor_group(self.h_group[group_id_batch], self.h_group[idx]).squeeze().cpu()]
-            pred_result = torch.cat(pred_results, dim=0) #一维张量，source与group_num个小组的评分
-            argsort = torch.argsort(pred_result, dim=0, descending=True)  # (batch*step, 1+n_group), torch.argsort返回的值表示按序排列后，每个位置对应原数组的idx
-            top_index = argsort[:10]
-            print('推荐的top10:')
-            for index in top_index:
-                group = self.id2group[index]
-                print(group, self.group_info[group]['member_name'],self.org_info[self.group_info[group]['affiliate']])
-            '''
 
     def load_model(self, load_path):
         state = torch.load(load_path)
@@ -755,7 +691,7 @@ class Runner(object):
         self.predictor_author.load_state_dict(state_dict)
 
     def save_model(self, save_path):
-        #存model
+        # save model
         state = {
             'state_dict': self.model.state_dict(),
             'best_val': self.best_val,
@@ -765,7 +701,7 @@ class Runner(object):
             'args': vars(self.p)
         }
         torch.save(state, save_path)
-        # 存predictor
+        # save predictor
         if self.p.train_author:
             state = {'state_dict': self.predictor_author.state_dict()}
             torch.save(state, save_path+'predictor_author')
@@ -784,12 +720,12 @@ if __name__ == '__main__':
     parser.add_argument('-log_dir', default='./log/', help='Log directory')
     parser.add_argument('-config_dir', default='./config/', help='Config directory')
     parser.add_argument('-store_name', default='testrun', help='Set run name for saving/restoring models')
-    parser.add_argument('-dataset', default='MAG', help='Dataset to use(org-community/MAG), default: OrgPaper')
-    parser.add_argument('-runs', default=1, help='Number of runs')
+    parser.add_argument('-dataset', default='MAG-G', help='Dataset to use(org-community/MAG), default: OrgPaper')
+    parser.add_argument('-runs', default=5, help='Number of runs')
     parser.add_argument('-use_a_attribute', default=True, help='use author attribute')
     parser.add_argument('-use_g_attribute', default=False, help='use group attribute')
-    parser.add_argument('-restore', default=False, help='Restore from the previously saved model')  # 是否载入原模型，默认为False
-    parser.add_argument('-use_sample', default = False, help='Use sampling or not') #only Aminer: GAT/HGT, use_sample 时train_author必须为False
+    parser.add_argument('-restore', default=False, help='Restore from the previously saved model')
+    parser.add_argument('-use_sample', default = False, help='Use sampling or not') #only Aminer: GAT/HGT, must set train_author=False
     parser.add_argument('-data_size', default=1,type=float, help='Partial datasets')
 
     # train and test
@@ -800,36 +736,35 @@ if __name__ == '__main__':
     parser.add_argument('-optimizer', dest='optimizer', default='AdamW', type=str, help='Adam/AdamW')
     parser.add_argument('-scheduler', dest='scheduler', default='plateau', type=str, help='cosine/plateau/onecycle/None')
     parser.add_argument('-gpu', type=str, default='0', help='Set GPU Ids : Eg: For CPU = -1, For Single GPU = 0')
-    parser.add_argument('-epoch', dest='max_epochs', type=int, default=15, help='Number of epochs')
+    parser.add_argument('-epoch', dest='max_epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('-eval_step', dest='eval_step', type=int, default=1, help='Number of epochs between two evaluating test')
     parser.add_argument('-l2', type=float, default=0.0, help='L2 Regularization for Optimizer')
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
-    parser.add_argument('-num_workers', type=int, default=0, help='Number of processes to construct batches')
-    parser.add_argument('-seed', dest='seed', default=5555, type=int, help='Seed for randomization')
+    parser.add_argument('-num_workers', type=int, default=8, help='Number of processes to construct batches')
     parser.add_argument('-only_test', default=False, help='only test')
-    parser.add_argument('-only_external_link', default=True, help='only test links between orgs')
-    parser.add_argument('-att_visual', default=False, help='visualize the attention distribution')
+    parser.add_argument('-only_external_link', default=False, help='only test links between orgs')
 
     # gcn设置部分
+    parser.add_argument('-only_attribute', default=False, help='only use author attribute information, no graph encoder')
     parser.add_argument('-only_GE', default=False, help='evaluate on group or author')
-    parser.add_argument('-graph_based', default='GCN', help="use MLP and raw features")  # GCN/GraphSage/GAT/HGT/RGCN
-    parser.add_argument('-gcn_layer', default=3, type=int, help='Number of GCN Layers')  # KG 隐层
-    parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')  # kg 初始dim
-    parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')  # KG 隐层
-    parser.add_argument('-embed_dim', default=128, type=int,help='Embedding dimension to give as input to score function')  # output_dim，即KG最后一层（embed_dim）
+    parser.add_argument('-graph_based', default='GraphSage', help="use MLP and raw features")  # GCN/GraphSage/GAT/HGT/RGCN
+    parser.add_argument('-gcn_layer', default=4, type=int, help='Number of GCN Layers')
+    parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')
+    parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')
+    parser.add_argument('-embed_dim', default=128, type=int,help='Embedding dimension to give as input to score function')
     parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use in GCN Layer')
     parser.add_argument('-hid_drop', default=0.1, type=float, help='Dropout after GCN')
     parser.add_argument('-gcn_node_residual', default=False, help='Use kg nodes residual or not')
     parser.add_argument('-gcn_node_concat', default=False, help='Concat kg_nodes or not')
-    parser.add_argument('-att_head', default=1, help='att head') #MMAN head 为1， att为 2
+    parser.add_argument('-att_head', default=1, help='att head')
 
     # MMAN
-    parser.add_argument('-view_num', default=3, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default = 'GMPool', help='how to get group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN/DiffPool/GMPool, None表示不从作者聚合信息到组织
+    parser.add_argument('-view_num', default=4, help='Use sampling or not')  # MMAN: set seeds(m)
+    parser.add_argument('-i2g_method', default = 'MMAN', help='how to get group embedding according to the author(degree/att/avg/set2set/MMAN/GMPool/None)')
 
     # predict layer
-    parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
+    parser.add_argument('-score_method', default='mv_score', help='Use sampling or not')  # MLP/mv_score
     parser.add_argument('-predict_layer', default=3, type=int, help='Number of GCN Layers')
 
     # load yaml
@@ -847,38 +782,38 @@ if __name__ == '__main__':
 
     if not args.restore:
         args.store_name = args.store_name + '_' + time.strftime('%d_%m_%Y') + '_' + time.strftime(
-            '%H:%M:%S')  # log文件的命名，在这里进行了更改
+            '%H:%M:%S')
     else:
-        args.store_name = 'testrun_09_03_2022_104840'  # 自定义的文件名
+        args.store_name = 'testrun_09_03_2022_104840'
 
     #set
     metrics = {
         'hits@1': Logger(args.runs),
-        'hits@3': Logger(args.runs),
         'hits@5': Logger(args.runs),
         'hits@10': Logger(args.runs),
-        'hits@20': Logger(args.runs),
         'mrr': Logger(args.runs),
         'ndcg@1': Logger(args.runs),
-        'ndcg@3': Logger(args.runs),
         'ndcg@5': Logger(args.runs),
         'ndcg@10': Logger(args.runs),
-        'ndcg@20': Logger(args.runs)
     }
     set_gpu(args.gpu)
     #######
 
+    os.environ["WANDB_API_KEY"] = 'XXXXX'
+    os.environ["WANDB_MODE"] = "offline"
     model = Runner(args, metrics)
+    if args.use_wandb:
+        wandb.login(key='XXXXX')  #enter yours
+        wandb.init(project='group-link-' + args.dataset + '(new)')
+        wandb.config.update(args)
     for run_id in range(args.runs):
-        if args.use_wandb:
-            wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
-            wandb.init(project='group-link-' + args.dataset + '(new)')
-            wandb.config.update(args)
         seed = random.randint(1 , 9999)
         np.random.seed(seed)
         torch.manual_seed(seed)
         model.fit(run_id)
-        if args.only_GE:
+        if args.only_attribute:
+            wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,A,author={args.train_author}"
+        elif args.only_GE:
             if args.use_a_attribute:
                 wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X+A,author={args.train_author}"
             else:

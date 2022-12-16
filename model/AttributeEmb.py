@@ -6,7 +6,7 @@ class AttributeEmb(nn.Module):
 
     def __init__(self, node_type_dict, embedding_dim, num, att_each_dim = 2):
         super(AttributeEmb, self).__init__()
-        self.att_embeddings = nn.ModuleList()#每一种类别用不同的W，同样的embedding
+        self.att_embeddings = nn.ModuleList()
         self.embedding_dim= embedding_dim
         self.node_type_dict= node_type_dict
         self.att_each_dim = att_each_dim

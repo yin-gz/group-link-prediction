@@ -11,6 +11,7 @@ from torch_geometric.data import DataLoader
 from logger import Logger
 import wandb
 
+
 class Runner(object):
     def __init__(self, params, metrics):
         """
@@ -39,12 +40,12 @@ class Runner(object):
         if self.p.train_group:
             self.predictor_group = LinkPredictor(self.p.embed_dim, self.p.embed_dim, 1, self.p.predict_layer,
                                                  self.p.dropout, self.p.score_method, self.p.i2g_method,
-                                                 self.p.view_num).to(self.device)
+                                                 self.p.view_num, self.p).to(self.device)
             param_optimizer += list(self.predictor_group.named_parameters())
 
         if self.p.train_user:
             self.predictor_user = LinkPredictor(self.p.embed_dim, self.p.embed_dim, 1, self.p.predict_layer,
-                                                self.p.dropout, 'MLP', None, self.p.view_num).to(self.device)
+                                                self.p.dropout, 'MLP', None, self.p.view_num, self.p).to(self.device)
             param_optimizer += list(self.predictor_user.named_parameters())
 
         # optimizer
@@ -187,11 +188,11 @@ class Runner(object):
             neg_ent_list = list(np.random.randint(0, self.item_num, (self.p.neg_for_test)))
             ui_test_neg.append([[user_id, neg_ent] for neg_ent in neg_ent_list])
 
-        self.ui_split_edge['train']['edge'] = torch.LongTensor(ui_edge_train)
-        self.ui_split_edge['valid']['edge'] = torch.LongTensor(ui_edge_valid)
-        self.ui_split_edge['test']['edge'] = torch.LongTensor(ui_edge_test)
-        self.ui_split_edge['valid']['neg_edge'] = torch.LongTensor(ui_valid_neg)
-        self.ui_split_edge['test']['neg_edge'] = torch.LongTensor(ui_test_neg)
+        self.ui_split_edge['train']['edge'] = torch.LongTensor(ui_edge_train).to(self.device)
+        self.ui_split_edge['valid']['edge'] = torch.LongTensor(ui_edge_valid).to(self.device)
+        self.ui_split_edge['test']['edge'] = torch.LongTensor(ui_edge_test).to(self.device)
+        self.ui_split_edge['valid']['neg_edge'] = torch.LongTensor(ui_valid_neg).to(self.device)
+        self.ui_split_edge['test']['neg_edge'] = torch.LongTensor(ui_test_neg).to(self.device)
 
         print('train ui edge size', self.ui_split_edge['train']['edge'].size())
         print('valid ui edge size', self.ui_split_edge['valid']['edge'].size())
@@ -311,7 +312,7 @@ class Runner(object):
         #print the final results of current run
         for key in self.metrics.keys():
             print(key)
-            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = self.p.use_wandb, best_mrr_epoch = self.best_epoch)
+            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = self.p.use_wandb)
 
 
     def train_epoch(self):
@@ -360,8 +361,7 @@ class Runner(object):
             if self.p.train_group:
                 loss += group_loss
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  # 梯度裁剪，大于1时则直接裁
-            # torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
 
             num_examples = pos_out.size(0)
@@ -431,7 +431,7 @@ class Runner(object):
             neg_out = []
             for i in range(neg_target.size(1)):
                 score = self.predictor_group(h_group[pos_edge[0]], h_cate[neg_target[:,i].squeeze(-1)]) #[batch]
-                neg_out += [score.squeeze().cpu()]  # 每次得到一个batch维的张量，一共得到self.p.neg_for_test个batch维的张量
+                neg_out += [score.squeeze().cpu()]
             neg_out = torch.cat(neg_out, dim=0).view(neg_target.size(1), -1).permute(1, 0)  # (batch,self.p.neg_for_test)
 
         del pos_edge,neg_target, h_group, h_cate
@@ -504,18 +504,18 @@ class Runner(object):
             source_emb = h_group[source].unsqueeze(1).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_group.size(-1)) #[B, n_target, dim]
             all_target_emb = h_cate.unsqueeze(0).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_cate.size(-1))#[B, n_target, dim]
             pred = self.predictor_group(source_emb,all_target_emb).view(source.size(0), -1) #[B*n_target] → [B, n_target]
-            argsort = torch.argsort(pred, dim=1, descending=True)  # [batch, N_target] #argsort返回按从大到小排列对应的原始idx
+            argsort = torch.argsort(pred, dim=1, descending=True)
             ranking_list = []
-            # 替换掉其它干扰项为-1e10
+            # subsitute other positive target to -1e10
             for j in range(source.size(0)):
                 target_label_j = target_label[j]
-                target_label_j[target[j]] = 0  # 去掉本身
+                target_label_j[target[j]] = 0
                 filt = torch.nonzero(target_label_j)
                 pred[j, filt] = -1e10
                 pos_rank = torch.nonzero(argsort[j] == target[j], as_tuple=False)
                 pos_rank = pos_rank.item() + 1
                 ranking_list.append(pos_rank)
-        print('valid pos rank', ranking_list)
+        #print('valid pos rank', ranking_list)
         ranking_list = torch.tensor(ranking_list)
         valid_results = get_metrics(ranking_list, len(ranking_list))
 
@@ -527,9 +527,8 @@ class Runner(object):
             source_emb = h_group[source].unsqueeze(1).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_group.size(-1)) #[B, n_target, dim]
             all_target_emb = h_cate.unsqueeze(0).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_cate.size(-1))#[B, n_target, dim]
             pred = self.predictor_group(source_emb,all_target_emb).view(source.size(0), -1) #[B*n_target] → [B, n_target]
-            argsort = torch.argsort(pred, dim=1, descending=True)  # [batch, N_target] #argsort返回按从大到小排列对应的原始idx
+            argsort = torch.argsort(pred, dim=1, descending=True)  # [batch, N_target]
             ranking_list = []
-            # 替换掉其它干扰项为-1e10
             for j in range(source.size(0)):
                 target_label_j = target_label[j]
                 target_label_j[target[j]] = 0  # 去掉本身
@@ -559,9 +558,8 @@ class Runner(object):
         state_dict = state['state_dict']
         self.predictor_user.load_state_dict(state_dict)
 
-    #只存了model而没有存predictor
     def save_model(self, save_path):
-        #存model
+        # save model
         state = {
             'state_dict': self.model.state_dict(),
             'best_val': self.best_val,
@@ -571,7 +569,7 @@ class Runner(object):
             'args': vars(self.p)
         }
         torch.save(state, save_path)
-        # 存predictor
+        # save predictor
         if self.p.train_user:
             state = {'state_dict': self.predictor_user.state_dict()}
             torch.save(state, save_path+'predictor_user')
@@ -592,10 +590,10 @@ if __name__ == '__main__':
     parser.add_argument('-log_dir', default='./log/', help='Log directory')
     parser.add_argument('-config_dir', default='./config/', help='Config directory')
     parser.add_argument('-store_name', default='testrun', help='Set run name for saving/restoring models')
-    parser.add_argument('-dataset', default='weeplaces', help='Dataset to use, default: OrgPaper')
+    parser.add_argument('-dataset', default='Weeplaces-G', help='Dataset to use, default: OrgPaper')
     parser.add_argument('-data_size', default=1, help='Use sampling or not')
-    parser.add_argument('-runs', default=5, help='Number of runs')
-    parser.add_argument('-restore', default = False, help='Restore from the previously saved model') # agg_user_result 时需要设置为True
+    parser.add_argument('-runs', default=3, help='Number of runs')
+    parser.add_argument('-restore', default = False, help='Restore from the previously saved model')
 
     # train and test
     parser.add_argument('-train_user', default=True, help='use user item to train')
@@ -611,18 +609,18 @@ if __name__ == '__main__':
     parser.add_argument('-l2', type=float, default=0.0, help='L2 Regularization for Optimizer')
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
-    parser.add_argument('-num_workers', type=int, default=8, help='Number of processes to construct batches')
+    parser.add_argument('-num_workers', type=int, default=4, help='Number of processes to construct batches')
     parser.add_argument('-eval_sample', default=True, help='eval by sampling')
     parser.add_argument('-only_test', default=False, help='only test')
 
     # gcn
-    parser.add_argument('-only_GE', default=True, help='evaluate on group or author') #only_GE
-    parser.add_argument('-graph_based', default='RGCN', help='Only use graph when encode author and group')  # /GCN/GAT/GraphSage/RGCN/RGAT/HGT
-    parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')  # kg 初始dim
-    parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')  # KG 隐层
-    parser.add_argument('-gcn_layer', default=4, type=int, help='Number of GCN Layers')  # KG 隐层
+    parser.add_argument('-only_GE', default=False, help='evaluate on group or author') #only_GE
+    parser.add_argument('-graph_based', default='GCN', help='Only use graph when encode author and group')  # /GCN/GAT/GraphSage/RGCN/RGAT/HGT
+    parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')
+    parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')
+    parser.add_argument('-gcn_layer', default=4, type=int, help='Number of GCN Layers')
     parser.add_argument('-embed_dim', default=128, type=int,
-                        help='Embedding dimension to give as input to score function')  # output_dim，即KG最后一层（embed_dim）
+                        help='Embedding dimension to give as input to score function')
     parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use in GCN Layer')
     parser.add_argument('-hid_drop', default=0.1, type=float, help='Dropout after GCN')
     parser.add_argument('-gcn_node_residual', default=False, help='Use kg nodes residual or not')
@@ -630,8 +628,8 @@ if __name__ == '__main__':
     parser.add_argument('-att_head', default=1, help='att head')
 
     #MMAN
-    parser.add_argument('-view_num', default=3, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default =None,help='how to get  group embedding according to the author')  # 设置a到g聚合方式, degree/att/average/set2set/MMAN, None表示不从作者聚合信息到组织
+    parser.add_argument('-view_num', default = 0, help='Use sampling or not')  # MMAN: set seeds(m)
+    parser.add_argument('-i2g_method', default = 'GMPool',help='how to get  group embedding according to the author')  # degree/att/avg/set2set/MMAN/None
 
     # predict layer
     parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
@@ -651,39 +649,38 @@ if __name__ == '__main__':
     args = argparse.Namespace(**args)
 
     if not args.restore:
-        args.store_name = args.store_name + '_' + time.strftime('%d_%m_%Y') + '_' + time.strftime('%H:%M:%S')  # log文件的命名，在这里进行了更改
+        args.store_name = args.store_name + '_' + time.strftime('%d_%m_%Y') + '_' + time.strftime('%H:%M:%S')
     else:
-        args.store_name = 'testrun_16_07_2022_161501'  # 自定义的文件名
+        args.store_name = 'testrun_16_07_2022_161501'
 
     #set
     metrics = {
         'hits@1': Logger(args.runs),
-        'hits@3': Logger(args.runs),
         'hits@5': Logger(args.runs),
         'hits@10': Logger(args.runs),
-        'hits@20': Logger(args.runs),
         'mrr': Logger(args.runs),
         'ndcg@1': Logger(args.runs),
-        'ndcg@3': Logger(args.runs),
         'ndcg@5': Logger(args.runs),
-        'ndcg@10': Logger(args.runs),
-        'ndcg@20': Logger(args.runs)
+        'ndcg@10': Logger(args.runs)
     }
     set_gpu(args.gpu)
-    #######
 
-    model = Runner(args, metrics)
+    #######
+    os.environ["WANDB_API_KEY"] = 'XXXXX'
+    os.environ["WANDB_MODE"] = "offline"
+    if args.use_wandb:
+        wandb.login(key='XXXXX') #enter yours
+        wandb.init(project='group-link-weeplaces(new)')
+        wandb.config.update(args)
+
     for run_id in range(args.runs):
-        if args.use_wandb:
-            wandb.login(key='8014511a0dd48cc3ef7fa06c2d54d541b0ad4373')
-            wandb.init(project='group-link-weeplaces(new)')
-            wandb.config.update(args)
+        model = Runner(args, metrics)
         seed = random.randint(1 , 9999)
         np.random.seed(seed)
         torch.manual_seed(seed)
         model.fit(run_id)
         if args.only_GE:
-            wandb.run.name = f"{run_id}: {args.graph_based},{args.gcn_layer}layer,user={args.train_user}"
+            wandb.run.name = f"{run_id}: {args.graph_based},{args.gcn_layer}layer,user={args.train_user},head={args.att_head}"
         else:
             wandb.run.name = f"{run_id}: {args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
 
