@@ -805,8 +805,3 @@ if __name__ == '__main__':
     torch.manual_seed(seed)
     model.fit()
     del model
-
-    print('----------------------------------------------')
-    for key in metrics.keys():
-        print(key)
-        metrics[key].print_statistics(metrics=key, use_wandb = args.use_wandb)
