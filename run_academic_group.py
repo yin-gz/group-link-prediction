@@ -743,7 +743,7 @@ if __name__ == '__main__':
     parser.add_argument('-att_head', default=1,  type=int, help='Number of attention heads')
 
     # MMAN
-    parser.add_argument('-view_num', default=3, type=int, help='View number in MMAN')
+    parser.add_argument('-view_num', default=4, type=int, help='View number in MMAN')
     parser.add_argument('-i2g_method', default = 'MMAN', type=str, help='How to aggregate author embeddings to groups(avg/degree/att/set2set/MAB/MMAN)')
 
     # predict layer
