@@ -17,14 +17,10 @@ np.set_printoptions(precision=4)
 
 def set_gpu(gpus):
     """
-    Sets the GPU to be used for the run
+    Set the GPU to be used for the run.
 
-    Parameters
-    ----------
-    gpus:           List of GPUs to be used for the run
-
-    Returns
-    -------
+    Args:
+        gpus: List of GPUs to be used for the run
 
     """
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -33,17 +29,15 @@ def set_gpu(gpus):
 
 def get_logger(name, log_dir, config_dir):
     """
-    Creates a logger object
+    Create a logger object.
 
-    Parameters
-    ----------
-    name:           Name of the logger file
-    log_dir:        Directory where logger file needs to be stored
-    config_dir:     Directory from where log_config.json needs to be read
+    Args:
+        name: Name of the logger file
+        log_dir: Directory where logger file needs to be stored
+        config_dir: Directory from where log_config.json needs to be read
 
-    Returns
-    -------
-    A logger object which writes to both file and stdout
+    Returns:
+        A logger object which writes to both file and stdout.
 
     """
     config_dict = json.load(open(config_dir + 'log_config.json'))
@@ -58,11 +52,32 @@ def get_logger(name, log_dir, config_dir):
     return logger
 
 def get_param(shape):
+    """
+    Initialize the params in the neural networks using xavier_normal.
+
+    Args:
+        shape: Shape of the params
+
+    Returns:
+        Params after initializing
+
+    """
     param = Parameter(torch.Tensor(*shape).cuda());
     xavier_normal_(param.data)
     return param
 
 def get_metrics(ranking_list, n):
+    """
+    Calculate the metrics from pos ranking list.
+
+    Args:
+        ranking_list: List of the postive instances ranks
+        n: Length of the ranking_list
+
+    Returns:
+        A dict including results of different metrics
+
+    """
     hits1_list = (ranking_list <= 1).to(torch.float)
     hits5_list = (ranking_list <= 5).to(torch.float)
     hits10_list = (ranking_list <= 10).to(torch.float)
@@ -81,8 +96,17 @@ def get_metrics(ranking_list, n):
 
 
 def eval_pos_neg(y_pred_pos, y_pred_neg):
-    # y_pred_pos:[batch*step]
-    # y_pred_neg:[batch*step,n_group/100]
+    """
+    Calculate the pos ranking based on the positive scores and negative scores.
+
+    Args:
+        y_pred_pos: [batch*step]
+        y_pred_neg: [batch*step,N_neg]
+
+    Returns:
+        A dict including results of different metrics
+
+    """
     n = y_pred_pos.size(0)
     #print('pos ', y_pred_pos)
     #print('neg ', y_pred_neg)

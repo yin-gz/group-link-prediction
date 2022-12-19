@@ -4,6 +4,9 @@
 - Compatible with PyTorch 1.8 and Python 3.8.
 - Dependencies can be installed using `requirements.txt`.
 
+### Preparation
+- Make directories: `./checkpoints`, `./log`, `./wandb`
+
 ### Datasets
 - We conduct experiments on three datasets: MAG-G, Aminer-G, and Weeplaces-G. The datasets can be downloaded [here](https://drive.google.com/drive/folders/1UWTdSy6L4aVI8zIHlzTywM592LdFaI3T?usp=sharing)
 - The datasets should be put in `./data` directory.

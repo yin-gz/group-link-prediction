@@ -5,7 +5,6 @@ import numpy as np
 import torch
 
 from helper import *
-from data_loader import *
 import yaml
 from model.models import G2GModel, LinkPredictor
 from model.AttributeEmb import AttributeEmb
@@ -13,7 +12,6 @@ from torch_sparse import SparseTensor
 from itertools import combinations
 from logger import Logger
 from scipy.sparse import csr_matrix
-from model.node2vec import Node2Vec
 from torch_scatter import scatter
 from torch_geometric.data import HeteroData
 import wandb
@@ -29,6 +27,7 @@ class Runner(object):
 
         Args:
             params: List of hyper-parameters of the model
+            metrics: Dict of metric loggers.
         """
         self.p = params
         self.metrics = metrics
@@ -55,11 +54,6 @@ class Runner(object):
             self.predictor_author = LinkPredictor(self.p.embed_dim, self.p.embed_dim, 1, self.p.predict_layer,
                                                 self.p.dropout, 'MLP', None, self.p.view_num, self.p).to(self.device)
             param_optimizer += list(self.predictor_author.named_parameters())
-        if self.p.use_g_attribute:
-            self.group_attemb_layer = AttributeEmb(self.group_attribute,
-                                                   embedding_dim=self.p.gcn_dim, num=self.group_num,
-                                                   att_each_dim=self.p.attr_dim).to(self.device)
-            param_optimizer += list(self.group_attemb_layer.named_parameters())
         if self.p.use_a_attribute:
             self.author_attemb_layer = AttributeEmb(self.author_attribute, embedding_dim=self.p.gcn_dim,
                                                     num=self.author_num, att_each_dim=self.p.attr_dim).to(self.device)
@@ -93,19 +87,18 @@ class Runner(object):
             self.scheduler = None
 
     def load_data(self):
+        """
+        Build graph and generate train\valid\test datasets.
+
+        """
+
         # 0. pre:fitler group according to self.group_info，generate group_train_set\group_valid_set\group_test_set
         # load from file
         author_set, group_set = OrderedSet(), OrderedSet()
         ag_edge = []
         self.g2a = ddict(set)
         self.a2g = {}
-        org_info = {}
-        
-        if self.p.use_g_attribute:
-            f_org = open(self.p.data_dir+self.p.dataset+'aminer_affiliations.txt', 'r', encoding='utf-8')
-            for line in f_org.readlines():
-                dict = json.loads(line)
-                org_info[dict['id']] = dict
+
         group_co_train_all = json.load(open(self.p.data_dir + self.p.dataset + '/PAG_train.json', 'r', encoding='utf-8'))
         group_co_valid_all = json.load(open(self.p.data_dir + self.p.dataset + '/PAG_valid.json', 'r', encoding='utf-8'))
         group_co_vt = json.load(open(self.p.data_dir + self.p.dataset + '/PAG_test.json', 'r', encoding='utf-8'))
@@ -117,7 +110,7 @@ class Runner(object):
         group_list = list(self.group_info.keys())
         random.shuffle(group_list)
 
-        # select partial group (option)
+        # select partial datasets (optional)
         group_filter_list = set(group_list[:int(len(self.group_info) * self.p.data_size)])
         group_co_train, group_co_valid, group_co_test = {}, {}, {}
 
@@ -239,17 +232,6 @@ class Runner(object):
         self.author_split_edge['train']['edge'] = torch.LongTensor(author_train_edge)  # 只有训练时有用，不对user推荐效果进行测试
         self.group_split_edge['train']['edge'] = torch.LongTensor(group_train_edge)
 
-        # generate group neg edge for training
-        '''
-        group_train_neg_edge = []
-        neg_target_all = np.random.choice(np.array(list(group_train_set)), len(group_train_edge), replace=True)
-        for index, edge in enumerate(group_train_edge):
-            group_source = edge[0]
-            neg_group = self.group2id[neg_target_all[index]]
-            group_train_neg_edge.append([group_source, neg_group])
-        self.group_split_edge['train']['neg_edge'] = torch.LongTensor(group_train_neg_edge)
-        '''
-
         # calculate degrees of authors
         temp = self.a_graph.copy()
         for i in author_set:
@@ -336,8 +318,7 @@ class Runner(object):
         for group_id, coo_list in valid_group_coo.items():
             coo_list = set(coo_list)
             sample_neg_list = list(all_group_set - coo_list)
-            #neg_ent_list = list(np.random.randint(0, self.group_num, (100)))
-            neg_ent_list = np.random.choice(np.array(sample_neg_list, dtype=int), 100, replace=True)
+            neg_ent_list = np.random.choice(np.array(sample_neg_list, dtype=int), self.p.neg_for_test, replace=True)
             for coo_group in coo_list:
                 group_valid_edge.append([group_id, coo_group])
                 group_valid_neg_edge.append([[group_id, neg_ent] for neg_ent in neg_ent_list])
@@ -346,8 +327,7 @@ class Runner(object):
         for group_id, coo_list in test_group_coo.items():
             coo_list = set(coo_list)
             sample_neg_list = list(all_group_set - coo_list)
-            #neg_ent_list = list(np.random.randint(0, self.group_num, (100)))
-            neg_ent_list = np.random.choice(np.array(sample_neg_list, dtype=int), 100, replace=True)
+            neg_ent_list = np.random.choice(np.array(sample_neg_list, dtype=int), self.p.neg_for_test, replace=True)
             for coo_group in coo_list:
                 group_test_edge.append([group_id, coo_group])
                 group_test_neg_edge.append([[group_id, neg_ent] for neg_ent in neg_ent_list])
@@ -359,50 +339,19 @@ class Runner(object):
         print('valid group edge size', self.group_split_edge['valid']['edge'].size())
         print('test group edge size', self.group_split_edge['test']['edge'].size())
         print('G2G',  2 * (len(group_train_edge) + len(group_valid_edge) + len(group_test_edge)) / self.group_num)
-        if self.p.use_g_attribute:
-            self.group_attribute = self.load_group_attribute()
-        else:
-            self.group_attribute = None
         if self.p.use_a_attribute:
             self.author_attribute = self.load_author_attribute()
         else:
             self.author_attribute = None
 
 
-    def load_group_attribute(self):
-        # load org's type\country\city
-        self.org_info = {}
-        f_org = open(self.p.data_dir + self.p.dataset + '/aminer_affiliations.txt', 'r', encoding='utf-8')
-        for line in f_org.readlines():
-            dict = json.loads(line)
-            self.org_info[dict['id']] = dict
-        group_attribute = []  #[{'type':'','country':'','city':''},{},{}...]
-
-        for id, ent in self.id2group.items():
-            org_id = self.group_info[ent]["affiliate"]
-            try:
-                info_dict = self.org_info[org_id]
-                del (info_dict['id'])
-            except:
-                info_dict = {}
-            group_attribute.append(info_dict)
-        # modify group_attribute to {'type':['company,'university','',...],'country':[]}
-        group_attribute_new = {'type': [], 'country': [], 'city': []}
-        for each in group_attribute:
-            for key_name in group_attribute_new.keys():
-                if key_name in each:
-                    group_attribute_new[key_name].append(each[key_name])
-                else:
-                    group_attribute_new[key_name].append('')
-        # turn to id
-        for key_name, each_list in group_attribute_new.items():
-            key_set = set(each_list)
-            item2id = {ent: idx for idx, ent in enumerate(key_set)}
-            group_attribute_new[key_name] = [item2id[item] for item in each_list]
-
-        return group_attribute_new
-
     def load_author_attribute(self):
+        """
+        Load attribute information for authors in self.id2author.
+
+        Returns:
+            author_attr: Dict, {'title_emb': List(ndarray), 'n_citation': List(int), 'n_pub':List(int)}
+        """
         with open(self.p.data_dir + self.p.dataset + '/author_attr.pkl', 'rb') as f:
             data_df = pickle.load(f)
         author_attr = {'title_emb': [], 'n_citation': [], 'n_pub': []}
@@ -430,6 +379,7 @@ class Runner(object):
                 author_attr['n_citation'].append(0)
                 author_attr['n_pub'].append(0)
         print('no_att_author number',no_att_author)
+
         # turn to id
         for key_name, each_list in author_attr.items():
             if key_name != 'title_emb':
@@ -441,7 +391,11 @@ class Runner(object):
 
         return author_attr
 
-    def fit(self, run_id):
+    def fit(self):
+        """
+        Main process of the model, including training and evaluating.
+
+        """
         self.best_val_value, self.best_val, self.best_epoch = 0., {}, 0
         save_path = os.path.join('./checkpoints', self.p.store_name.replace(':', ''))
         if self.p.restore:  # load
@@ -453,20 +407,18 @@ class Runner(object):
         self.x_author = None
         self.select_dim = None
         with torch.no_grad():
-            if self.p.use_g_attribute:
-                self.x_group = self.group_attemb_layer(self.group_attribute)
             if self.p.use_a_attribute:
                 self.x_author  = self.author_attemb_layer(self.author_attribute)
 
         if self.p.only_test:
             valid_results, test_results = self.evaluate_Recommend()
             for key, result in valid_results.items():
-                self.metrics[key].add_result(run_id, (100 * valid_results[key], 100 * test_results[key]))
+                self.metrics[key].add_result((100 * valid_results[key], 100 * test_results[key]))
         else:
             kill_cnt = 0
             for epoch in range(self.p.max_epochs):
                 #train
-                train_loss = self.run_epoch()
+                train_loss = self.train_epoch()
                 if self.p.scheduler is not None:
                     if self.p.scheduler == 'plateau':
                         self.scheduler.step(train_loss)
@@ -483,7 +435,7 @@ class Runner(object):
                     self.logger.info(
                         f'Epoch: {epoch:02d}, 'f'Loss: {train_loss:.4f}, 'f'Valid: {valid_results}%, 'f'Test: {test_results}%')
                     for key in valid_results.keys():
-                        self.metrics[key].add_result(run_id, (100 * valid_results[key], 100 * test_results[key]))
+                        self.metrics[key].add_result((100 * valid_results[key], 100 * test_results[key]))
                         if self.p.use_wandb:
                             wandb.log({f"valid/{key}": 100 * valid_results[key], f"test/{key}": 100 * test_results[key], "epoch": epoch})
                     if valid_results['mrr'] > self.best_val_value:
@@ -503,9 +455,17 @@ class Runner(object):
         # print the final results of current run
         for key in self.metrics.keys():
             print(key)
-            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = args.use_wandb)
+            self.metrics[key].print_statistics(metrics=key, use_wandb = args.use_wandb)
 
-    def run_epoch(self):
+    def train_epoch(self):
+        """
+        Train for an epoch according to the group and user loss functions.
+
+        Returns:
+            Average loss of the instances in an epoch.
+
+        """
+
         self.model.train()
         self.predictor_group.train()
         if self.p.train_author:
@@ -557,7 +517,18 @@ class Runner(object):
         return total_loss / total_examples
 
     def run_batch(self, pos_edge, neg_target):
-        #pos edge: [2,batch], neg_target: [batch,1] / [batch，k]
+        """
+        Generate the computing graph in a mini-batch and put it to the model to get the prediction scores.
+
+        Args:
+            pos_edge: Positive edges in an batch, shape: [2,batch]
+            neg_target: Negative targets for the souce nodes in positive edges, shape: [batch，1](train)/[batch，N_neg](test)
+
+        Returns:
+            pos_out: Scores of positive instances in an epoch, [batch, 1]
+            neg_out: Scores of negative instances in an epoch, [batch, N_neg]
+
+        """
         if len(neg_target.size()) == 1:
             neg_target = neg_target.unsqueeze(1)
 
@@ -638,6 +609,14 @@ class Runner(object):
 
     @torch.no_grad()
     def evaluate_Recommend(self):
+        """
+        Evaluate the model by sampling some negative targets.
+
+        Returns:
+            valid_results: Metrics dict of valid dataset.
+            test_results: Metric dict of test dataset.
+
+        """
         self.model.eval()
         self.predictor_group.eval()
 
@@ -676,6 +655,13 @@ class Runner(object):
         return valid_results, test_results
 
     def load_model(self, load_path):
+        """
+        Load the trained model from the path.
+
+        Args:
+            load_path: Path to load the model.
+
+        """
         state = torch.load(load_path)
         state_dict = state['state_dict']
         self.best_val = state['best_val']
@@ -685,13 +671,14 @@ class Runner(object):
         if self.p.scheduler:
             self.scheduler.load_state_dict(state_dict["scheduler"])
 
-    def load_predictor(self, load_path):
-        state = torch.load(load_path)
-        state_dict = state['state_dict']
-        self.predictor_author.load_state_dict(state_dict)
-
     def save_model(self, save_path):
-        # save model
+        """
+        Save the trained model to the path.
+
+        Args:
+            save_path: Path to save the model.
+
+        """
         state = {
             'state_dict': self.model.state_dict(),
             'best_val': self.best_val,
@@ -711,27 +698,26 @@ class Runner(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-args', help="use args", type=bool, default=True) #if true, args priority is higher than yaml
-    parser.add_argument('-config_file', help="configuration file Aminer-G/MAG-G/Weeplaces-G.yml", type=str, required=False, default='Aminer-G.yml')
+    parser.add_argument('-args_prior', help="If true, args priority is higher than yaml config", type=bool, default=False)
+    parser.add_argument('-config_file', help="Configuration file (Aminer-G/MAG-G/Weeplaces-G.yml)", type=str, required=False, default=None)
 
     # basic
-    parser.add_argument('-use_wandb', default=True, help='use wandb or not')
-    parser.add_argument('-data_dir', default='../data/', help='Log directory')
-    parser.add_argument('-log_dir', default='./log/', help='Log directory')
-    parser.add_argument('-config_dir', default='./config/', help='Config directory')
-    parser.add_argument('-store_name', default='testrun', help='Set run name for saving/restoring models')
-    parser.add_argument('-dataset', default='MAG-G', help='Dataset to use(org-community/MAG), default: OrgPaper')
-    parser.add_argument('-runs', default=5, help='Number of runs')
-    parser.add_argument('-use_a_attribute', default=True, help='use author attribute')
-    parser.add_argument('-use_g_attribute', default=False, help='use group attribute')
-    parser.add_argument('-restore', default=False, help='Restore from the previously saved model')
-    parser.add_argument('-use_sample', default = False, help='Use sampling or not') #only Aminer: GAT/HGT, must set train_author=False
-    parser.add_argument('-data_size', default=1,type=float, help='Partial datasets')
+    parser.add_argument('-use_wandb', default=False, type=bool, help='Use wandb or not')
+    parser.add_argument('-data_dir', default='./data/', type=str, help='Data directory')
+    parser.add_argument('-log_dir', default='./log/', type=str, help='Log directory')
+    parser.add_argument('-config_dir', default='./config/', type=str, help='Config directory')
+    parser.add_argument('-store_name', default='testrun', type=str, help='Set run name for saving/restoring models')
+    parser.add_argument('-dataset', default='MAG-G', type=str, help='Dataset to use(Aminer-G/MAG-G)')
+    parser.add_argument('-use_a_attribute', default=True, type=bool, help='Use author attributes')
+    parser.add_argument('-restore', default=False, type=bool, help='Restore from the previously saved model')
+    parser.add_argument('-use_sample', default = False, type=bool, help='Only use the mini-batch authors to construct the graph to avoid OOM, remember to set train_author=False')
+    parser.add_argument('-data_size', default=1, type=float, help='Proportion of the dataset to use, default: 1')
 
     # train and test
-    parser.add_argument('-train_author', default=True, help='use  author collabration to train')
-    parser.add_argument('-train_group', default=True, help='use group collabration to train')
-    parser.add_argument('-attr_dim', default=2, help='att attribute')
+    parser.add_argument('-train_author', default=True, type=bool, help='use  authors\' collabrations to train')
+    parser.add_argument('-train_group', default=True, type=bool, help='use groups\' collabrations to train')
+    parser.add_argument('-neg_for_test', default=100, type=int, help='The number of sampled neg entities for test')
+    parser.add_argument('-attr_dim', default=2, type=int, help='Dim of n_citation and n_pub embeddings')
     parser.add_argument('-batch', dest='batch_size', default=256, type=int, help='Batch size')
     parser.add_argument('-optimizer', dest='optimizer', default='AdamW', type=str, help='Adam/AdamW')
     parser.add_argument('-scheduler', dest='scheduler', default='plateau', type=str, help='cosine/plateau/onecycle/None')
@@ -742,43 +728,42 @@ if __name__ == '__main__':
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
     parser.add_argument('-num_workers', type=int, default=8, help='Number of processes to construct batches')
-    parser.add_argument('-only_test', default=False, help='only test')
-    parser.add_argument('-only_external_link', default=False, help='only test links between orgs')
+    parser.add_argument('-only_test', default=False, type=bool, help='Only test the model')
+    parser.add_argument('-only_external_link', default=False, type=bool, help='Only test links between orgs (not inside orgs)')
 
-    # gcn设置部分
-    parser.add_argument('-only_attribute', default=False, help='only use author attribute information, no graph encoder')
-    parser.add_argument('-only_GE', default=False, help='evaluate on group or author')
-    parser.add_argument('-graph_based', default='GraphSage', help="use MLP and raw features")  # GCN/GraphSage/GAT/HGT/RGCN
+    # graph encoder
+    parser.add_argument('-only_attribute', default=False, type=bool, help='Only use attribute information, no interaction history (RQ2)')
+    parser.add_argument('-only_GE', default=False, type=bool, help='Only use the GNN-based Encoders without aggregators')
+    parser.add_argument('-graph_based', default='GAT', type=str, help="GCN/GAT/GraphSage/RGCN/HGT")
     parser.add_argument('-gcn_layer', default=4, type=int, help='Number of GCN Layers')
-    parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')
-    parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')
-    parser.add_argument('-embed_dim', default=128, type=int,help='Embedding dimension to give as input to score function')
-    parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use in GCN Layer')
-    parser.add_argument('-hid_drop', default=0.1, type=float, help='Dropout after GCN')
-    parser.add_argument('-gcn_node_residual', default=False, help='Use kg nodes residual or not')
-    parser.add_argument('-gcn_node_concat', default=False, help='Concat kg_nodes or not')
-    parser.add_argument('-att_head', default=1, help='att head')
+    parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for nodes')
+    parser.add_argument('-gcn_dim', default=128, type=int, help='Hidden dimension size for nodes in GCN')
+    parser.add_argument('-embed_dim', default=128, type=int,help='Dimension of embeddings when putting to the score function')
+    parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use')
+    parser.add_argument('-att_head', default=1,  type=int, help='Number of attention heads')
 
     # MMAN
-    parser.add_argument('-view_num', default=0, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default = 'MMAN', help='how to get group embedding according to the author(avg/degree/att/set2set/MMAN/MAB/None)')
+    parser.add_argument('-view_num', default=3, type=int, help='View number in MMAN')
+    parser.add_argument('-i2g_method', default = 'MMAN', type=str, help='How to aggregate author embeddings to groups(avg/degree/att/set2set/MAB/MMAN)')
 
     # predict layer
-    parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
-    parser.add_argument('-predict_layer', default=3, type=int, help='Number of GCN Layers')
+    parser.add_argument('-score_method', default='mv_score', type=str, help='MLP/mv_score(for MMAN)')  # MLP/mv_score
+    parser.add_argument('-predict_layer', default=3, type=int, help='Number of MLP layers in the scorer')
 
     # load yaml
     args = parser.parse_args()
-    if args.args:  # args priority is higher than yaml
-        opt = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
-        opt.update(vars(args))
-        args = opt
-    else:  # yaml priority is higher than args
-        opt = vars(args)
-        args = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
-        opt.update(args)
-        args = opt
-    args = argparse.Namespace(**args)
+    if args.config_file is not None:
+        if args.args_prior:  # args priority is higher than yaml
+            opt = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
+            opt.update(vars(args))
+            args = opt
+            args = argparse.Namespace(**args)
+        else:  # yaml priority is higher than args
+            opt = vars(args)
+            args = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
+            opt.update(args)
+            args = opt
+            args = argparse.Namespace(**args)
 
     if not args.restore:
         args.store_name = args.store_name + '_' + time.strftime('%d_%m_%Y') + '_' + time.strftime(
@@ -786,45 +771,42 @@ if __name__ == '__main__':
     else:
         args.store_name = 'testrun_09_03_2022_104840'
 
-    #set
     metrics = {
-        'hits@1': Logger(args.runs),
-        'hits@5': Logger(args.runs),
-        'hits@10': Logger(args.runs),
-        'mrr': Logger(args.runs),
-        'ndcg@1': Logger(args.runs),
-        'ndcg@5': Logger(args.runs),
-        'ndcg@10': Logger(args.runs),
+        'hits@1': Logger(),
+        'hits@5': Logger(),
+        'hits@10': Logger(),
+        'mrr': Logger(),
+        'ndcg@1': Logger(),
+        'ndcg@5': Logger(),
+        'ndcg@10': Logger()
     }
     set_gpu(args.gpu)
-    #######
 
-    os.environ["WANDB_API_KEY"] = 'XXXXX'
-    os.environ["WANDB_MODE"] = "offline"
-    model = Runner(args, metrics)
     if args.use_wandb:
         wandb.login(key='XXXXX')  #enter yours
-        wandb.init(project='group-link-' + args.dataset + '(new)')
+        wandb.init(project='group-link-' + args.dataset)
         wandb.config.update(args)
-    for run_id in range(args.runs):
-        seed = random.randint(1 , 9999)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        model.fit(run_id)
         if args.only_attribute:
-            wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,A,author={args.train_author}"
+            wandb.run.name = f"{args.i2g_method}({args.view_num}), {args.gcn_layer}layer, only A, author={args.train_author}"
         elif args.only_GE:
             if args.use_a_attribute:
-                wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X+A,author={args.train_author}"
+                wandb.run.name = f"{args.graph_based}, {args.gcn_layer}layer,X+A, author={args.train_author}"
             else:
-                wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,X,author={args.train_author}"
+                wandb.run.name = f"{args.graph_based}, {args.gcn_layer}layer,X, author={args.train_author}"
         else:
             if args.use_a_attribute:
-                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X+A,{args.graph_based},{args.score_method},author={args.train_author},head={args.att_head}"
+                wandb.run.name = f"{args.i2g_method}({args.view_num}), {args.gcn_layer}layer, X+A, {args.graph_based}, {args.score_method}, author={args.train_author}, head={args.att_head}"
             else:
-                wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,X,{args.graph_based},{args.score_method},author={args.train_author},head={args.att_head}"
+                wandb.run.name = f"{args.i2g_method}({args.view_num}), {args.gcn_layer}layer, X, {args.graph_based}, {args.score_method}, author={args.train_author}, head={args.att_head}"
 
+    model = Runner(args, metrics)
+    seed = random.randint(1 , 9999)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    model.fit()
+    del model
+
+    print('----------------------------------------------')
     for key in metrics.keys():
-        print('----------------------------------------------')
         print(key)
         metrics[key].print_statistics(metrics=key, use_wandb = args.use_wandb)

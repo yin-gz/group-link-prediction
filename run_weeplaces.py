@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import yaml
 from helper import *
-from data_loader import *
 from torch_scatter import scatter
 from model.models import B2GModel, LinkPredictor
 from torch_geometric.data import DataLoader
@@ -19,6 +18,7 @@ class Runner(object):
         
         Args:
             params: List of hyper-parameters of the model
+            metrics: Dict of metric loggers
         """
         self.p = params
         self.metrics = metrics
@@ -79,8 +79,8 @@ class Runner(object):
     def load_data(self):
         """
         Build graph and generate train\valid\test datasets.
-        """
 
+        """
         self.ui_graph = []  # user-item graph, for gcn encoding
         self.ug_graph = []  # user-group graph, for aggregating
         self.ic_graph = []  # item-cate graph, for aggregating
@@ -173,7 +173,7 @@ class Runner(object):
 
 
         # 3. build train\valid\test datasets
-        # 3.1 user to item edges
+        # 3.1 build user to item edges
         self.ui_split_edge = {'train': {}, 'valid': {}, 'test': {}}
         random.shuffle(ui_edge_all)
         ui_edge_train = ui_edge_all[:int(0.6*len(ui_edge_all))]
@@ -199,11 +199,11 @@ class Runner(object):
         print('test ui edge size', self.ui_split_edge['test']['edge'].size())
         print('Avg: user to item', 2*(len(ui_edge_train)+len(ui_edge_valid)+len(ui_edge_test))/self.user_num)
 
-        # 3.2 group to cate edges
+        # 3.2 build group to cate edges
         self.gc_split_edge = {'train': {}, 'valid': {}, 'test': {}}
-        gc_train_edge, gc_valid_edge, gc_test_edge = [], [], [] #[[source1,target1],[source2,target2]...]
-        gc_valid_target, gc_test_target = [], []#[[0, 1, 0...], [1, 0, 1]...]
-        gc_train_neg_edge, gc_valid_neg_edge, gc_test_neg_edge = [], [], [] #[n_edge,self.p.neg_for_test,2]
+        gc_train_edge, gc_valid_edge, gc_test_edge = [], [], [] # [[source1,target1],[source2,target2]...]
+        gc_valid_target, gc_test_target = [], []# [[0, 1, 0...], [1, 0, 1]...]
+        gc_train_neg_edge, gc_valid_neg_edge, gc_test_neg_edge = [], [], [] # [n_edge, self.p.neg_for_test, 2]
 
         train_group_num = int(0.6 * self.group_num)
         valid_group_num = int(0.2 * self.group_num)
@@ -221,7 +221,7 @@ class Runner(object):
                     gc_train_edge.append([group_id, cate])
                     neg_ent = np.random.choice(np.array(sample_neg_list, dtype=int), 1, replace=False)[0]
                     gc_train_neg_edge.append([group_id,neg_ent])
-            # sample #neg_for_test examples for each pos example when testing
+            # sample neg_for_test examples for each pos example when testing
             elif count < train_group_num + valid_group_num:
                 count += 1
                 neg_ent_list = list(np.random.choice(np.array(sample_neg_list, dtype=int), self.p.neg_for_test, replace=True))
@@ -244,12 +244,15 @@ class Runner(object):
         self.gc_split_edge['valid']['neg_edge'] = torch.LongTensor(gc_valid_neg_edge)
         self.gc_split_edge['test']['edge'] = torch.LongTensor(gc_test_edge)
         self.gc_split_edge['test']['neg_edge'] = torch.LongTensor(gc_test_neg_edge)
-
         self.gc_split_edge['valid']['target'] = torch.Tensor(gc_valid_target)
         self.gc_split_edge['test']['target'] = torch.Tensor(gc_test_target)
 
 
-    def fit(self, run_id):
+    def fit(self):
+        """
+        Main process of the model, including training and evaluating.
+
+        """
         self.best_val_value, self.best_val, self.best_epoch = 0., {}, 0
         save_path = os.path.join('./checkpoints', self.p.store_name.replace(':', ''))
         self.x_user = None
@@ -265,12 +268,12 @@ class Runner(object):
             else:
                 valid_results, test_results = self.evaluate_all()
             for key in valid_results.keys():
-                self.metrics[key].add_result(0, (100 * valid_results[key], 100 * test_results[key]))
+                self.metrics[key].add_result((100 * valid_results[key], 100 * test_results[key]))
 
         else:
             kill_cnt = 0
             for epoch in range(self.p.max_epochs):
-                #train
+                # train
                 train_loss = self.train_epoch()
                 if self.p.scheduler is not None:
                     if self.p.scheduler == 'plateau':
@@ -281,7 +284,7 @@ class Runner(object):
                     wandb.log({f"train/loss-runs": train_loss,
                                f"train/lr": self.optimizer.param_groups[0]["lr"], f"epoch": epoch})
 
-                #eval
+                # eval
                 if epoch % self.p.eval_step == 0:
                     if self.p.eval_sample:
                         results = self.evaluate_sample()
@@ -291,7 +294,7 @@ class Runner(object):
                     self.logger.info(
                         f'Epoch: {epoch:02d}, 'f'Loss: {train_loss:.4f}, 'f'Valid: {valid_results}%, 'f'Test: {test_results}%')
                     for key in valid_results.keys():
-                        self.metrics[key].add_result(run_id, (100 * valid_results[key], 100 * test_results[key]))
+                        self.metrics[key].add_result((100 * valid_results[key], 100 * test_results[key]))
                         if self.p.use_wandb:
                             wandb.log({f"valid/{key}": 100 * valid_results[key], f"test/{key}": 100 * test_results[key],
                                        "epoch": epoch})
@@ -309,13 +312,20 @@ class Runner(object):
                     break
                 print('---------------------------------------------------')
 
-        #print the final results of current run
+        #print the final results
         for key in self.metrics.keys():
             print(key)
-            self.metrics[key].print_statistics(metrics=key, run_id=run_id, use_wandb = self.p.use_wandb)
+            self.metrics[key].print_statistics(metrics=key, use_wandb = self.p.use_wandb)
 
 
     def train_epoch(self):
+        """
+        Train for an epoch according to the group and user loss functions.
+
+        Returns:
+            Average loss of the instances in an epoch.
+
+        """
         self.model.train()
         if self.p.train_user:
             self.predictor_user.train()
@@ -330,7 +340,7 @@ class Runner(object):
         step = 0
         epoch_length = min(gpos_train_edge.size(0), upos_train_edge.size(0))
 
-        print('total train step', epoch_length/self.p.batch_size)
+        #print('total train step', epoch_length/self.p.batch_size)
         for perm in DataLoader(range(epoch_length), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             step += 1
             self.optimizer.zero_grad()
@@ -368,14 +378,25 @@ class Runner(object):
             total_loss += loss.item() * num_examples
             total_examples += num_examples
 
-            if step % 10 == 0:
-                print(step, total_loss / total_examples)
+            #if step % 10 == 0:
+                #print(step, total_loss / total_examples)
 
         return total_loss / total_examples
 
     def run_batch(self, pos_edge, neg_target):
-        #when trainning： pos edge[2,batch], neg_target[batch，1]
-        #when testing： pos edge[2,batch], neg_target[batch，k]
+        """
+        Generate the computing graph in a mini-batch and put it to the model to get the prediction scores.
+
+        Args:
+            pos_edge: Positive edges in an batch, shape: [2,batch]
+            neg_target: Negative targets for the souce nodes in positive edges, shape: [batch，1](train)/[batch，N_neg](test)
+
+        Returns:
+            pos_out: Scores of positive instances in an epoch, [batch, 1]
+            neg_out: Scores of negative instances in an epoch, [batch, N_neg]
+
+        """
+
         ic_graph, ug_graph = [],[]
         if len(neg_target.size()) == 1:
             neg_target = neg_target.unsqueeze(1)
@@ -440,6 +461,14 @@ class Runner(object):
 
     @torch.no_grad()
     def evaluate_sample(self):
+        """
+        Evaluate the model by sampling some negative targets.
+
+        Returns:
+            valid_results: Metrics dict of valid dataset.
+            test_results: Metric dict of test dataset.
+
+        """
         self.model.eval()
         self.predictor_group.eval()
 
@@ -457,7 +486,7 @@ class Runner(object):
         print('valid_edge',pos_valid_edge.size(0))
         for perm in DataLoader(range(pos_valid_edge.size(0)), self.p.batch_size, shuffle=True, num_workers= self.p.num_workers):
             edge = pos_valid_edge[perm].t()
-            neg_target = neg_valid_edge[perm][:,:,1] #[batch,100,2] → [batch,100]
+            neg_target = neg_valid_edge[perm][:,:,1] #[batch,N_neg,2] → [batch,N_neg]
             pos_out, neg_out = self.run_batch(edge, neg_target)
             pos_valid_preds += [pos_out.squeeze().cpu()]
             neg_valid_preds += [neg_out.squeeze().cpu()]
@@ -472,9 +501,9 @@ class Runner(object):
             neg_test_preds += [neg_out.squeeze().cpu()]
 
         pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
-        neg_valid_pred = torch.cat(neg_valid_preds, dim=0)  # (step*batch,100)
+        neg_valid_pred = torch.cat(neg_valid_preds, dim=0)  # (step*batch,N_neg)
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
-        neg_test_pred = torch.cat(neg_test_preds, dim=0)  # (step*batch,100)
+        neg_test_pred = torch.cat(neg_test_preds, dim=0)  # (step*batch,N_neg)
         valid_results = eval_pos_neg(pos_valid_pred, neg_valid_pred)
         test_results = eval_pos_neg(pos_test_pred, neg_test_pred)
 
@@ -482,11 +511,19 @@ class Runner(object):
 
     @torch.no_grad()
     def evaluate_all(self):
+        """
+        Evaluate the model by using all targets.
+
+        Returns:
+            valid_results: Metrics dict of valid dataset.
+            test_results: Metric dict of test dataset.
+
+        """
         self.model.eval()
         self.predictor_group.eval()
         split_edge = self.gc_split_edge
         pos_valid_edge = split_edge['valid']['edge']
-        valid_target = split_edge['valid']['target'] #[n_valid_source, n_target_all]
+        valid_target = split_edge['valid']['target']
         pos_test_edge = split_edge['test']['edge']
         test_target = split_edge['test']['target']
 
@@ -527,11 +564,11 @@ class Runner(object):
             source_emb = h_group[source].unsqueeze(1).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_group.size(-1)) #[B, n_target, dim]
             all_target_emb = h_cate.unsqueeze(0).expand([source.size(0),self.cate_num,-1]).reshape(-1,h_cate.size(-1))#[B, n_target, dim]
             pred = self.predictor_group(source_emb,all_target_emb).view(source.size(0), -1) #[B*n_target] → [B, n_target]
-            argsort = torch.argsort(pred, dim=1, descending=True)  # [batch, N_target]
+            argsort = torch.argsort(pred, dim=1, descending=True)  # [B, N_target]
             ranking_list = []
             for j in range(source.size(0)):
                 target_label_j = target_label[j]
-                target_label_j[target[j]] = 0  # 去掉本身
+                target_label_j[target[j]] = 0
                 filt = torch.nonzero(target_label_j)
                 pred[j, filt] = -1e10
                 pos_rank = torch.nonzero(argsort[j] == target[j], as_tuple=False)
@@ -544,6 +581,13 @@ class Runner(object):
         return valid_results, test_results
 
     def load_model(self, load_path):
+        """
+        Load the trained model from the path.
+
+        Args:
+            load_path: Path to load the model.
+
+        """
         state = torch.load(load_path)
         state_dict = state['state_dict']
         self.best_val = state['best_val']
@@ -553,13 +597,14 @@ class Runner(object):
         if self.p.scheduler:
             self.scheduler.load_state_dict(state_dict["scheduler"])
 
-    def load_predictor(self, load_path):
-        state = torch.load(load_path)
-        state_dict = state['state_dict']
-        self.predictor_user.load_state_dict(state_dict)
-
     def save_model(self, save_path):
-        # save model
+        """
+        Save the trained model to the path.
+
+        Args:
+            save_path: Path to save the model.
+
+        """
         state = {
             'state_dict': self.model.state_dict(),
             'best_val': self.best_val,
@@ -578,109 +623,103 @@ class Runner(object):
             torch.save(state, save_path+'predictor_group')
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-args', help="use args", type=bool, default=True) #if true, args priority is higher than yaml
-    parser.add_argument('-config_file', help="configuration file Aminer-G/MAG-G/Weeplaces-G.yml", type=str, default='Weeplaces-G.yml')
+    parser.add_argument('-args_prior', help="If true, args priority is higher than yaml config", type=bool, default=True)
+    parser.add_argument('-config_file', help="Configuration file (Aminer-G/MAG-G/Weeplaces-G.yml)", type=str, default=None)
 
     # basic
-    parser.add_argument('-use_wandb', default=True, help='use wandb or not')
-    parser.add_argument('-data_dir', default='../data/', help='Log directory')
-    parser.add_argument('-log_dir', default='./log/', help='Log directory')
-    parser.add_argument('-config_dir', default='./config/', help='Config directory')
-    parser.add_argument('-store_name', default='testrun', help='Set run name for saving/restoring models')
-    parser.add_argument('-dataset', default='Weeplaces-G', help='Dataset to use, default: OrgPaper')
-    parser.add_argument('-data_size', default=1, help='Use sampling or not')
-    parser.add_argument('-runs', default=3, help='Number of runs')
-    parser.add_argument('-restore', default = False, help='Restore from the previously saved model')
+    parser.add_argument('-use_wandb', default=False, type=bool, help='Use wandb or not')
+    parser.add_argument('-data_dir', default='./data/', type=str, help='Log directory')
+    parser.add_argument('-log_dir', default='./log/', type=str, help='Log directory')
+    parser.add_argument('-config_dir', default='./config/', type=str, help='Config directory')
+    parser.add_argument('-store_name', default='testrun', type=str, help='Set run name for saving/restoring models')
+    parser.add_argument('-dataset', default='Weeplaces-G', type=str, help='Dataset to use, default: Weeplaces-G')
+    parser.add_argument('-data_size', default=1,  type=float, help='Use sampling or not')
+    parser.add_argument('-restore', default = False, type=bool, help='Proportion of the dataset to use, default: 1')
 
     # train and test
-    parser.add_argument('-train_user', default=True, help='use user item to train')
-    parser.add_argument('-train_group', default=True, help='use group collabration to train')
-    parser.add_argument('-use_attribute', default=False, help='use_attribute')
-    parser.add_argument('-neg_for_test', default=100, help='sample neg entities for test')
+    parser.add_argument('-train_user', default=True, type=bool, help='Use user-item to train')
+    parser.add_argument('-train_group', default=True, type=bool, help='Use group-bundle to train')
+    parser.add_argument('-neg_for_test', default=100, type=int, help='The number of sampled neg entities for test')
     parser.add_argument('-batch', dest='batch_size', default=256, type=int, help='Batch size')
     parser.add_argument('-optimizer', dest='optimizer', default='AdamW', type=str, help='Adam/AdamW')
     parser.add_argument('-scheduler', dest='scheduler', default='plateau', type=str, help='cosine/plateau/onecycle/None')
     parser.add_argument('-gpu', type=str, default='0', help='Set GPU Ids : Eg: For CPU = -1, For Single GPU = 0')
-    parser.add_argument('-epoch', dest='max_epochs', type=int, default=30, help='Number of epochs')
+    parser.add_argument('-epoch', dest='max_epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('-eval_step', dest='eval_step', type=int, default=1, help='Number of epochs between two evaluating test')
     parser.add_argument('-l2', type=float, default=0.0, help='L2 Regularization for Optimizer')
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
     parser.add_argument('-bias', action='store_true', help='Whether to use bias in the model')
-    parser.add_argument('-num_workers', type=int, default=4, help='Number of processes to construct batches')
-    parser.add_argument('-eval_sample', default=True, help='eval by sampling')
-    parser.add_argument('-only_test', default=False, help='only test')
+    parser.add_argument('-num_workers', type=int, default=8, help='Number of processes to construct batches')
+    parser.add_argument('-eval_sample', default = True, type=bool, help='Sample neg entities to test or use the whole targets to test')
+    parser.add_argument('-only_test', default = False, type=bool, help='Only test the model')
 
-    # gcn
-    parser.add_argument('-only_GE', default=False, help='evaluate on group or author') #only_GE
-    parser.add_argument('-graph_based', default='GCN', help='Only use graph when encode author and group')  # /GCN/GAT/GraphSage/RGCN/RGAT/HGT
+    # graph encoder
+    parser.add_argument('-only_GE', default=False, type=bool, help='Only use the GNN-based Encoders without aggregators')
+    parser.add_argument('-graph_based', default='GCN', type=str, help='GCN/GAT/GraphSage/RGCN/HGT')
     parser.add_argument('-init_dim', default=128, type=int, help='Initial dimension size for entities and relations')
-    parser.add_argument('-gcn_dim', default=128, type=int, help='Number of hidden units in GCN')
+    parser.add_argument('-gcn_dim', default=128, type=int, help='Hidden dimension size for nodes in GCN')
     parser.add_argument('-gcn_layer', default=4, type=int, help='Number of GCN Layers')
     parser.add_argument('-embed_dim', default=128, type=int,
-                        help='Embedding dimension to give as input to score function')
-    parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use in GCN Layer')
-    parser.add_argument('-hid_drop', default=0.1, type=float, help='Dropout after GCN')
-    parser.add_argument('-att_head', default=1, help='att head')
+                        help='Dimension of embeddings when putting to the score function')
+    parser.add_argument('-dropout', default=0.1, type=float, help='Dropout to use')
+    parser.add_argument('-att_head', default=1,  type=int, help='Number of attention heads')
 
     #MMAN
-    parser.add_argument('-view_num', default = 0, help='Use sampling or not')  # MMAN: set seeds(m)
-    parser.add_argument('-i2g_method', default = 'GMPool',help='how to get  group embedding according to the author')  # degree/att/avg/set2set/MMAN/None
+    parser.add_argument('-view_num', default = 4, type=int, help='View number in MMAN')
+    parser.add_argument('-i2g_method', default = 'MMAN', type=str, help='How to aggregate author embeddings to groups(avg/degree/att/set2set/MAB/MMAN/None)')
 
     # predict layer
-    parser.add_argument('-score_method', default='MLP', help='Use sampling or not')  # MLP/mv_score
-    parser.add_argument('-predict_layer', default=3, type=int, help='Number of GCN Layers')
+    parser.add_argument('-score_method', default='mv_score', type=str, help='MLP/mv_score(for MMAN)')
+    parser.add_argument('-predict_layer', default=3, type=int, help='Number of MLP layers in the scorer')
 
     # load yaml
     args = parser.parse_args()
-    if args.args:  # args priority is higher than yaml
-        opt = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
-        opt.update(vars(args))
-        args = opt
-    else:  # yaml priority is higher than args
-        opt = vars(args)
-        args = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
-        opt.update(args)
-        args = opt
-    args = argparse.Namespace(**args)
+    if args.config_file is not None:
+        if args.args_prior:  # args priority is higher than yaml
+            opt = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
+            opt.update(vars(args))
+            args = opt
+            args = argparse.Namespace(**args)
+        else:  # yaml priority is higher than args
+            opt = vars(args)
+            args = yaml.load(open(args.config_dir + args.config_file), Loader=yaml.FullLoader)
+            opt.update(args)
+            args = opt
+            args = argparse.Namespace(**args)
 
     if not args.restore:
         args.store_name = args.store_name + '_' + time.strftime('%d_%m_%Y') + '_' + time.strftime('%H:%M:%S')
     else:
         args.store_name = 'testrun_16_07_2022_161501'
 
-    #set
     metrics = {
-        'hits@1': Logger(args.runs),
-        'hits@5': Logger(args.runs),
-        'hits@10': Logger(args.runs),
-        'mrr': Logger(args.runs),
-        'ndcg@1': Logger(args.runs),
-        'ndcg@5': Logger(args.runs),
-        'ndcg@10': Logger(args.runs)
+        'hits@1': Logger(),
+        'hits@5': Logger(),
+        'hits@10': Logger(),
+        'mrr': Logger(),
+        'ndcg@1': Logger(),
+        'ndcg@5': Logger(),
+        'ndcg@10': Logger()
     }
     set_gpu(args.gpu)
 
-    #######
-    os.environ["WANDB_API_KEY"] = 'XXXXX'
-    os.environ["WANDB_MODE"] = "offline"
     if args.use_wandb:
         wandb.login(key='XXXXX') #enter yours
-        wandb.init(project='group-link-weeplaces(new)')
+        wandb.init(project='group-link-weeplaces')
         wandb.config.update(args)
-
-    for run_id in range(args.runs):
-        model = Runner(args, metrics)
-        seed = random.randint(1 , 9999)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        model.fit(run_id)
         if args.only_GE:
-            wandb.run.name = f"{run_id}: {args.graph_based},{args.gcn_layer}layer,user={args.train_user},head={args.att_head}"
+            wandb.run.name = f"{args.graph_based},{args.gcn_layer}layer,user={args.train_user},head={args.att_head}"
         else:
-            wandb.run.name = f"{run_id}: {args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
+            wandb.run.name = f"{args.i2g_method}({args.view_num}),{args.gcn_layer}layer,{args.graph_based},user={args.train_user},{args.score_method},head={args.att_head}"
+
+    model = Runner(args, metrics)
+    seed = random.randint(1 , 9999)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    model.fit()
+    del model
 
     print('----------------------------------------------')
     for key in metrics.keys():

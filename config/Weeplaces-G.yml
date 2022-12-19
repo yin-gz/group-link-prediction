@@ -1,48 +1,43 @@
 #basic
 use_wandb: False
+data_dir: './data/'
+log_dir: './log/'
+config_dir: './config/'
 store_name: 'testrun'
-dataset: 'weeplaces'
+dataset: 'Weeplaces-G'
 data_size: 1
-load_embedding: False
-logdir: './log/'
 restore: False
-    
-#trai and test
-train_user: True
+
+#train and test
+train_author: True
 train_group: True
-use_attribute: False
 neg_for_test: 100
-batch: 128
+batch: 256
 optimizer: 'AdamW'
 scheduler: 'plateau'
 gpu: '0'
-epoch: 30
+epoch: 20
+eval_step: 1
 l2: 0.0
 lr: 0.001
-bias: 'store_true'
-num_workers: 0
-seed: 2345
+num_workers: 8
+eval_sample: True
 only_test: False
 
-#gcn
-graph_based: 'RGCN'
+#graph encoder
+only_GE: False
+graph_based: 'GCN'
 init_dim: 128
 gcn_dim: 128
 gcn_layer: 4
 embed_dim: 128
 dropout: 0.1
-hid_drop: 0.1
-gcn_node_residual: False
-gcn_node_concat: False
-
-#only_GE
-only_GE: False
-
-#MMAN
-view_num: 3
-i2g_method: 'MMAN'
 att_head: 1
 
+#MMAN
+view_num: 4
+i2g_method: 'MMAN'
+
 # predict layer
-score_method: 'MLP'
+score_method: 'mv_score'
 predict_layer: 3

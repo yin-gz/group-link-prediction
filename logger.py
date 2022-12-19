@@ -1,42 +1,41 @@
 import torch
 import wandb
-import numpy as np
 
-# each metric has a Logger, save the results in each valid time
-#after each run, print the test results according to the best valid results
 class Logger(object):
-    def __init__(self, runs):
-        self.results = [[] for _ in range(runs)]
-        self.best_val_results = [0. for _ in range(runs)]
-        self.best_test_results = [0. for _ in range(runs)]
+    """
+    Each metric has a Logger, save the results in each valid time.
 
-    def add_result(self, run_id, result):
-        #result (valid_value, test_value)
-        self.results[run_id].append(result)
+    """
+    def __init__(self):
+        self.results = []
+        self.best_val_results = 0.
+        self.best_test_results = 0.
 
-    def print_statistics(self, metrics, run_id=None, use_wandb = False):
-        if run_id is not None:
-            result = torch.tensor(self.results[run_id]) # [epoch, 2]
-            argmax = result[:, 0].argmax().item()
-            best_valid = round(result[argmax, 0].item(), 2)
-            best_test = round(result[argmax, 1].item(), 2)
-            print(f'Run {run_id + 1:02d}:')
-            print(f'Highest Valid: {best_valid}')
-            print(f'Final Test: {best_test}')
-            self.best_val_results[run_id] = best_valid
-            self.best_test_results[run_id] = best_test
+    def add_result(self, result):
+        """
+        Append current epoch result to the Logger.
 
-            if use_wandb:
-                wandb.run.summary[f"Run{run_id}:best/Valid/{metrics}"] = best_valid
-                wandb.run.summary[f"Run{run_id}:best/Test/{metrics}"] = best_test
-                wandb.run.summary[f"Run{run_id}:best/Test_epoch/{metrics}"] = argmax
-        else:
-            val_results = np.array(self.best_val_results)
-            test_results = np.array(self.best_test_results)
+        Args:
+            result: (valid_value, test_value)
+        """
+        #result
+        self.results.append(result)
 
-            print(f'All Runs Results:')
-            print(f'Highest Valid: {val_results.mean():.2f} ± {val_results.std():.2f}')
-            print(f'Final Test: {test_results.mean():.2f} ± {test_results.std():.2f}')
-            if use_wandb:
-                wandb.run.summary[f"Total:best/Valid/{metrics}"] = str(round(val_results.mean(), 2)) + '±' + str(round(val_results.std(), 2))
-                wandb.run.summary[f"Total:best/Test/{metrics}"] = str(round(test_results.mean(), 2)) + '±' + str(round(test_results.std(), 2))
+    def print_statistics(self, metrics, use_wandb = False):
+        """
+        After each run, print the test results according to the best valid results.
+
+        """
+        result = torch.tensor(self.results) # [epoch, 2]
+        argmax = result[:, 0].argmax().item()
+        best_valid = round(result[argmax, 0].item(), 2)
+        best_test = round(result[argmax, 1].item(), 2)
+        print(f'Highest Valid: {best_valid}')
+        print(f'Final Test: {best_test}')
+        self.best_val_results = best_valid
+        self.best_test_results = best_test
+
+        if use_wandb:
+            wandb.run.summary[f"Best/Valid/{metrics}"] = best_valid
+            wandb.run.summary[f"Best/Test/{metrics}"] = best_test
+            wandb.run.summary[f"Best/Test_epoch/{metrics}"] = argmax

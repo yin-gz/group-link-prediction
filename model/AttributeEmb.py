@@ -3,7 +3,9 @@ import torch.nn as nn
 from helper import *
 
 class AttributeEmb(nn.Module):
-
+    """
+    Embedding layers for discrete attribute.
+    """
     def __init__(self, node_type_dict, embedding_dim, num, att_each_dim = 2):
         super(AttributeEmb, self).__init__()
         self.att_embeddings = nn.ModuleList()
@@ -18,7 +20,7 @@ class AttributeEmb(nn.Module):
         for i, emb_layer in enumerate(self.att_embeddings):
             emb_layer.reset_parameters()
 
-    def forward(self,attribute_dict):
+    def forward(self, attribute_dict):
         out_x = []
         key_list = list(attribute_dict.keys())
         j = 0

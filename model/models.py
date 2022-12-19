@@ -1,11 +1,14 @@
 from helper import *
-from torch_geometric.nn import Set2Set, SAGPooling, GraphMultisetTransformer
+from torch_geometric.nn import Set2Set, GraphMultisetTransformer
 from model.graph_layer import *
 from torch_geometric.nn.dense.linear import Linear
 
 
 
 class GE(torch.nn.Module):
+	"""
+	Graph-based encoders, implemented by pytorch geometric.
+	"""
 	def __init__(self, params, node_type_dict = None, edge_type_dict = None):
 		super(GE, self).__init__()
 		self.p = params
@@ -23,6 +26,9 @@ class GE(torch.nn.Module):
 
 
 class GroupAgg(torch.nn.Module):
+	"""
+	Aggregation functions to aggregate individuals' embeddings to group embeddings.
+	"""
 	def __init__(self, params):
 		super(GroupAgg, self).__init__()
 		self.p = params
@@ -62,11 +68,8 @@ class GroupAgg(torch.nn.Module):
 		elif self.p.i2g_method == 'set2set':
 			self.set_pool = Set2Set(self.p.embed_dim, processing_steps=1) #global_add_pool/global_mean_pool/global_max_pool/GlobalAttention
 			self.group_lin = Linear(2*self.p.embed_dim, self.p.embed_dim)
-		elif self.p.i2g_method == 'GMPool':
-			#if i2i graph is given (only for academic group)
-			self.gm_pool_g = GraphMultisetTransformer(self.p.embed_dim, self.p.embed_dim,self.p.embed_dim, pool_sequences = ['GMPool_G'], num_heads=1)
-			#if i2i graph is not given
-			self.gm_pool_i = GraphMultisetTransformer(self.p.embed_dim, self.p.embed_dim, self.p.embed_dim, pool_sequences=['GMPool_I'], num_heads=1)
+		elif self.p.i2g_method == 'MAB':
+			self.mab_pool = GraphMultisetTransformer(self.p.embed_dim, self.p.embed_dim, self.p.embed_dim, pool_sequences=['GMPool_I'], num_heads=self.p.att_head)
 
 
 	def i2g_degree(self, each_i, agg_graph, degree):
@@ -79,8 +82,7 @@ class GroupAgg(torch.nn.Module):
 		return h_group, alpha
 
 	def i2g_att(self, each_i, agg_graph, h_group=None):
-		if h_group is None:
-			h_group = scatter(each_i, agg_graph[1], dim=0,reduce='mean')  # average individual emb to get initial h_group
+		h_group = scatter(each_i, agg_graph[1], dim=0,reduce='mean')  # average individual emb to get initial h_group
 		x_j = torch.index_select(h_group, 0, agg_graph[1])
 		x_i = self.lin_src(each_i).view(-1, self.heads, self.p.gcn_dim)
 		x_j = self.lin_dst(x_j).view(-1, self.heads, self.p.gcn_dim)
@@ -109,7 +111,19 @@ class GroupAgg(torch.nn.Module):
 		h_group = self.ln(h_group)
 		return h_group, alpha
 
-	def forward(self, h_i, i2g_graph, i_degree, group_num = 0 , h_group = None, i_graph = None):
+	def forward(self, h_i, i2g_graph, i_degree, group_num = 0 , h_group = None):
+		"""
+		Args:
+			h_i: [n_individuals, emb_dim]
+			i2g_graph: denote the individuals belong to which group, [2, n_pairs]
+			i_degree: [n_individuals]
+			h_group: [n_groups, emb_dim]
+
+		Return:
+			h_group: [n_groups, emb_dim]
+			alpha: the weights distribution of each group, [n_individuals]
+
+		"""
 		each_i = torch.index_select(h_i, 0, i2g_graph[0])
 		if self.p.i2g_method == 'degree':
 			return self.i2g_degree(each_i, i2g_graph, i_degree)
@@ -121,30 +135,23 @@ class GroupAgg(torch.nn.Module):
 		elif self.p.i2g_method == 'att':
 			self.heads = self.p.att_head
 			return self.i2g_att(each_i, i2g_graph, h_group)
-		elif self.p.i2g_method == 'set2set':  # set2set
+		elif self.p.i2g_method == 'set2set':
 			h_group = self.set_pool(each_i, i2g_graph[1])
 			h_group = self.group_lin(h_group)
 			return h_group, None
-		elif self.p.i2g_method == 'DiffPool':
-			#need to be modified, need author cooperation as input, assume s is defined
-			h_group = self.diff_pool(h_i, adj = i_graph, index = i2g_graph[1])
+		elif self.p.i2g_method == 'MAB':
+			h_group = self.mab_pool(each_i, i2g_graph[1])
 			h_group = self.group_lin(h_group)
 			return h_group, None
-		elif self.p.i2g_method == 'GMPool':
-			i_graph = None
-			if i_graph is None:
-				self.gm_pool = self.gm_pool_i
-			else:
-				self.gm_pool = self.gm_pool_g
-			h_group = self.gm_pool(each_i, i2g_graph[1], edge_index = i_graph)
-			h_group = self.group_lin(h_group)
-			return h_group, None
-		elif self.p.i2g_method == 'MMAN':  # MMAN
+		elif self.p.i2g_method == 'MMAN':
 			return self.i2g_MMAN(each_i, i2g_graph, group_num)
 
 
 
 class B2GModel(GE):
+	"""
+	Model framework for bundle-to-group recommendation.
+	"""
 	def __init__(self, params, num_user = 0 , num_item = 0, num_group = 0,num_cate = 0):
 		self.p = params
 		node_type_dict = {'user': [], 'item': [], 'cate': [], 'group': []}
@@ -156,7 +163,7 @@ class B2GModel(GE):
 		self.num_item = num_item
 		self.num_group = num_group
 		self.num_cate = num_cate
-		self.drop = torch.nn.Dropout(self.p.hid_drop)
+		self.drop = torch.nn.Dropout(self.p.dropout)
 
 		#init embedding
 		self.user_embedding_layer = nn.Embedding(self.num_user, self.p.init_dim)
@@ -174,6 +181,26 @@ class B2GModel(GE):
 		self.h_item = None
 
 	def forward(self, x_user, x_item, ui_graph, ic_graph, ug_graph, x_user_index = None, x_item_index = None, node_num = None, u_degree = None, i_degree = None):
+		"""
+		Args:
+			x_user: initial user embeddings
+			x_item: initial item embeddings
+			ui_graph: user-to-item graph, [2, edge_ui]
+			ic_graph: item-to-cate graph, [2, edge_ic]
+			ug_graph: user-to-group graph, [2, edge_ug]
+			x_user_index: user index in a mini-batch (optional)
+			x_item_index: item index in a mini-batch (optional)
+			node_num:  node count dict (optional)
+			u_degree: [n_users]
+			i_degree: [n_items]
+
+		Return:
+			h_group: [n_groups, emb_dim]
+			h_cate: [n_cates, emb_dim]
+			self.h_user: [n_users, emb_dim]
+			self.h_item: [n_items, emb_dim]
+
+		"""
 		if x_user is None:
 			x_user = self.user_embedding_layer(torch.LongTensor([idx for idx in range(self.num_user)]).to(ui_graph.device))
 		if x_item is None:
@@ -252,6 +279,9 @@ class B2GModel(GE):
 
 
 class G2GModel(GE):
+	"""
+	Model framework for acdemic group link prediction.
+	"""
 	def __init__(self, params, num_author=0, num_group=0):
 		self.p = params
 		node_type_dict = {'author': [], 'group': []}
@@ -261,7 +291,7 @@ class G2GModel(GE):
 
 		self.num_author = num_author
 		self.num_group = num_group
-		self.drop = torch.nn.Dropout(self.p.hid_drop)
+		self.drop = torch.nn.Dropout(self.p.dropout)
 
 		# init embedding
 		if self.p.use_a_attribute is False:
@@ -279,14 +309,28 @@ class G2GModel(GE):
 		self.h_author = None
 
 	def forward(self, x_author, x_group, aa_graph, ag_graph, degree=None, group_num=None, author_index=None):
+		"""
+		Args:
+			x_author: [n_individuals, emb_dim]
+			x_group: [n_groups, emb_dim]
+			aa_graph: author collaboration graph, [2, n_author_collaborate]
+			ag_graph: denote the individuals belong to which group, [2, n_pairs]
+			degree: [n_authors]
+			group_num: number of groups in the computing graph
+			author_index: author index in a mini-batch (optional)
 
+		Return:
+			h_author: [n_authors, emb_dim]
+			h_group: [n_groups, emb_dim]
+
+		"""
 		agg_graph = ag_graph
 		if group_num is None:
 			group_num = self.num_group
 		if x_author is None:
 			x_author = self.author_embedding_layer(
 				torch.LongTensor([idx for idx in range(self.num_author)]).to(ag_graph.device))
-		if x_group is None and self.p.i2g_method != 'att':
+		if x_group is None:
 			x_group = torch.zeros(group_num, self.p.init_dim).to(ag_graph.device)
 		if author_index is not None:
 			x_author = torch.index_select(x_author, 0, author_index)
@@ -333,12 +377,15 @@ class G2GModel(GE):
 		if self.p.only_GE:
 			return h_author, h_group
 		else:
-			h_group, att = self.i2g_agg(h_author, agg_graph, degree, group_num, h_group, i_graph=aa_graph)
+			h_group, att = self.i2g_agg(h_author, agg_graph, degree, group_num, h_group)
 			return h_author, h_group
 
 
 
 class LinkPredictor(torch.nn.Module):
+	"""
+	Link predicting layer, including MLP and the proposed multi-view scoring module.
+	"""
 	def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout, score_method, i2g_method, view_num, param = None):
 		super(LinkPredictor, self).__init__()
 		self.p = param
@@ -361,7 +408,15 @@ class LinkPredictor(torch.nn.Module):
 			lin.reset_parameters()
 
 	def forward(self, x_i, x_j):
-		# (batch, dim)/(batch, view_num, dim)
+		"""
+		Args:
+			x_i: [batch, view_num, dim] (In MMAN) / [batch, dim] (Other Aggregators)
+			x_j: [batch, view_num, dim] (In MMAN) / [batch, dim] (Other Aggregators)
+
+		Return:
+			x: link prediction scores of groups, [batch]
+
+		"""
 		if self.score_method == 'MLP':
 			if len(x_i.size()) != 2:
 				x_i = x_i.view(x_i.size(0),-1)

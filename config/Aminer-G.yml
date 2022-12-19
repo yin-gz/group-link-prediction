@@ -1,47 +1,41 @@
 #basic
 use_wandb: False
-data_dir: '../data/'
+data_dir: './data/'
 log_dir: './log/'
 config_dir: './config/'
 store_name: 'testrun'
-dataset: 'org-community'
-runs: 1
+dataset: 'Aminer-G'
 use_a_attribute: True
-use_g_attribute: False
 restore: False
 use_sample: False
 data_size: 1
 
-#trai and test
+
+#train and test
 train_author: True
 train_group: True
+neg_for_test: 100
 attr_dim: 2
 batch: 256
 optimizer: 'AdamW'
 scheduler: 'plateau'
 gpu: '0'
-epoch: 'max_epochs'
+epoch: 20
 eval_step: 1
 l2: 0.0
 lr: 0.001
-bias: True
-num_workers: 0
-seed: 2345
+num_workers: 8
 only_test: False
-only_external_link: True
-att_visual: False
 
-#gcn
-only_GE: True
-graph_based: 'GCN'
+#graph encoder
+only_attribute: False
+only_GE: False
+graph_based: 'GraphSage'
+gcn_layer: 4
 init_dim: 128
 gcn_dim: 128
-gcn_layer: 3
 embed_dim: 128
 dropout: 0.1
-hid_drop: 0.1
-gcn_node_residual: False
-gcn_node_concat: False
 att_head: 1
 
 #MMAN
@@ -49,5 +43,5 @@ view_num: 3
 i2g_method: 'MMAN'
 
 # predict layer
-score_method: 'MLP'
+score_method: 'mv_score'
 predict_layer: 3
