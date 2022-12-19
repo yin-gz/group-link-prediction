@@ -59,4 +59,4 @@ Please cite the following paper if you use this code in your work.
     year={2023}
 }
 ```
-For any questions or suggestions please contact [Gongzhu Yin](yingz@hit.edu.cn).
+For any questions or suggestions please contact Gongzhu Yin (yingz@hit.edu.cn).
