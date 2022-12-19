@@ -15,11 +15,11 @@
 - Params for reproducing the reported GE+MMAN results are saved in `./config`. Please run
 ```shell
     #### Method: GE+MMAN
-    # Aminer-G
-    python run_academic_group.py -config_file Aminer-G.yml
-    
     # MAG-G
     python run_academic_group.py -config_file MAG-G.yml
+    
+    # Aminer-G
+    python run_academic_group.py -config_file Aminer-G.yml
     
     # Weeplaces-G
     python run_weeplaces.py -config_file Weeplaces-G.yml
