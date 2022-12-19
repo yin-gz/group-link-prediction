@@ -39,7 +39,7 @@ dropout: 0.1
 att_head: 1
 
 #MMAN
-view_num: 3
+view_num: 4
 i2g_method: 'MMAN'
 
 # predict layer

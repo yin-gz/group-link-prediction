@@ -16,7 +16,7 @@ batch: 256
 optimizer: 'AdamW'
 scheduler: 'plateau'
 gpu: '0'
-epoch: 20
+epoch: 30
 eval_step: 1
 l2: 0.0
 lr: 0.001
@@ -35,7 +35,7 @@ dropout: 0.1
 att_head: 1
 
 #MMAN
-view_num: 4
+view_num: 3
 i2g_method: 'MMAN'
 
 # predict layer

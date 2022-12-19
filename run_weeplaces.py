@@ -625,7 +625,7 @@ class Runner(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-args_prior', help="If true, args priority is higher than yaml config", type=bool, default=True)
+    parser.add_argument('-args_prior', help="If true, args priority is higher than yaml config", type=bool, default=False)
     parser.add_argument('-config_file', help="Configuration file (Aminer-G/MAG-G/Weeplaces-G.yml)", type=str, default=None)
 
     # basic
@@ -646,7 +646,7 @@ if __name__ == '__main__':
     parser.add_argument('-optimizer', dest='optimizer', default='AdamW', type=str, help='Adam/AdamW')
     parser.add_argument('-scheduler', dest='scheduler', default='plateau', type=str, help='cosine/plateau/onecycle/None')
     parser.add_argument('-gpu', type=str, default='0', help='Set GPU Ids : Eg: For CPU = -1, For Single GPU = 0')
-    parser.add_argument('-epoch', dest='max_epochs', type=int, default=20, help='Number of epochs')
+    parser.add_argument('-epoch', dest='max_epochs', type=int, default=30, help='Number of epochs')
     parser.add_argument('-eval_step', dest='eval_step', type=int, default=1, help='Number of epochs between two evaluating test')
     parser.add_argument('-l2', type=float, default=0.0, help='L2 Regularization for Optimizer')
     parser.add_argument('-lr', type=float, default=0.001, help='Starting Learning Rate')
