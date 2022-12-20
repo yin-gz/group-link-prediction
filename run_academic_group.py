@@ -452,11 +452,6 @@ class Runner(object):
                     break
                 print('---')
 
-        # print the final results of current run
-        for key in self.metrics.keys():
-            print(key)
-            self.metrics[key].print_statistics(metrics=key, use_wandb = args.use_wandb)
-
     def train_epoch(self):
         """
         Train for an epoch according to the group and user loss functions.

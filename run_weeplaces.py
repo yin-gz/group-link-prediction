@@ -307,16 +307,10 @@ class Runner(object):
                         kill_cnt = 0
 
                 kill_cnt += 1
-                if kill_cnt > 20:
+                if kill_cnt > 25:
                     self.logger.info("Early Stopping!!")
                     break
                 print('---------------------------------------------------')
-
-        #print the final results
-        for key in self.metrics.keys():
-            print(key)
-            self.metrics[key].print_statistics(metrics=key, use_wandb = self.p.use_wandb)
-
 
     def train_epoch(self):
         """
