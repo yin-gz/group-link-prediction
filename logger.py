@@ -8,8 +8,6 @@ class Logger(object):
     """
     def __init__(self):
         self.results = []
-        self.best_val_results = 0.
-        self.best_test_results = 0.
 
     def add_result(self, result):
         """
